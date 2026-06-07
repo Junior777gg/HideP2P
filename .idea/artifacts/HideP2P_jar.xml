@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="HideP2P:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/HideP2P_jar</output-path>
+    <root id="archive" name="HideP2P.jar">
+      <element id="module-output" name="HideP2P.main" />
+    </root>
+  </artifact>
+</component>
