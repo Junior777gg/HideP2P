@@ -34,9 +34,9 @@ class P2PChannel(val socket: DatagramSocket) {
                 buffer[1] = random.toByte()
                 buffer[2] = packetCount.toByte()
 
-                if(i == packetCount) {
+                if (i == packetCount) {
                     buffer[3] = (messageBytes.size - 236 * (packetCount - 1)).toByte()
-                }else{
+                } else {
                     buffer[3] = 236.toByte()
                 }
 
@@ -56,42 +56,50 @@ class P2PChannel(val socket: DatagramSocket) {
 
     }
 
-    suspend fun receive(message: ByteArray?): UDPFormat = withContext(Dispatchers.IO) {
-        val buffer = ByteArray(256)
-
-        if (message == null) {
-            socket.receive(DatagramPacket(buffer, buffer.size))
-        }else{
-            message.copyInto(buffer)
+    suspend fun receive(): UDPFormat {
+        while (true) {
+           val message = internalReceive(null)
+            if (message.type != "ping" && message.type != "connect" && message.type != "keep") {
+                return message
+            }
         }
+    }
 
-        val count = buffer[2].toInt()
-        val id = buffer[1].toInt()
-        val size = buffer[3].toInt()
-        if (count > 1) {
-            var currentMessage = Array(count){""}
-            currentMessage[buffer[0].toInt() - 1] = String(buffer.copyOfRange(20, 20 + size))
-            var received = 1
-
-            while (received < count) {
+    private suspend fun internalReceive(message: ByteArray?): UDPFormat = withContext(Dispatchers.IO) {
+            val buffer = ByteArray(256)
+            if (message == null) {
                 socket.receive(DatagramPacket(buffer, buffer.size))
+            } else {
+                message.copyInto(buffer)
+            }
 
-                if (id == buffer[1].toInt()) {
-                    currentMessage[buffer[0].toInt() - 1] = String(buffer.copyOfRange(20, buffer[3].toInt() + 20))
-                    received++
-                } else {
-                    receive(buffer)
+            val count = buffer[2].toInt()
+            val id = buffer[1].toInt()
+            val size = buffer[3].toInt()
+            if (count > 1) {
+                var currentMessage = Array(count) { "" }
+                currentMessage[buffer[0].toInt() - 1] = String(buffer.copyOfRange(20, 20 + size))
+                var received = 1
+
+                while (received < count) {
+                    socket.receive(DatagramPacket(buffer, buffer.size))
+
+                    if (id == buffer[1].toInt()) {
+                        currentMessage[buffer[0].toInt() - 1] = String(buffer.copyOfRange(20, buffer[3].toInt() + 20))
+                        received++
+                    } else {
+                        continue
+                    }
                 }
-            }
-            var stringMessage = ""
-            currentMessage.forEach { piece ->
-                stringMessage += piece
-            }
-            return@withContext Json.decodeFromString<UDPFormat>(stringMessage)
+                var stringMessage = ""
+                currentMessage.forEach { piece ->
+                    stringMessage += piece
+                }
+                return@withContext Json.decodeFromString<UDPFormat>(stringMessage)
 
-        } else {
-            val message = Json.decodeFromString<UDPFormat>(String(buffer.copyOfRange(20, buffer[3].toInt() + 20)))
-            return@withContext message
-        }
+            } else {
+                val message = Json.decodeFromString<UDPFormat>(String(buffer.copyOfRange(20, buffer[3].toInt() + 20)))
+                return@withContext message
+            }
     }
 }
