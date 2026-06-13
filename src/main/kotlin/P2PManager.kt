@@ -39,29 +39,35 @@ class P2PManager {
         return@withContext "$localIp:${socket.localPort}"
     }
 
-    suspend fun createConnection(remoteAddress: String, localAddress: String): P2PChannel {
+    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String): P2PChannel {
         socket.soTimeout = 0
         channel = P2PChannel(socket)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
-            channel.ip = localAddress.split(":")[0]
-            channel.port = localAddress.split(":")[1].toInt()
+            val myLocalAddress = getLocalAddress()
+            channel.myIp = myLocalAddress.split(":")[0]
+            channel.myPort = myLocalAddress.split(":")[1].toInt()
+            channel.remoteIp = remoteLocalAddress.split(":")[0]
+            channel.remotePort = remoteLocalAddress.split(":")[1].toInt()
         } else {
-            channel.ip = remoteAddress.split(":")[0]
-            channel.port = remoteAddress.split(":")[1].toInt()
+            val myAddress = getAddress()
+            channel.myIp = myAddress!!.split(":")[0]
+            channel.myPort = myAddress.split(":")[1].toInt()
+            channel.remoteIp = remoteAddress.split(":")[0]
+            channel.remotePort = remoteAddress.split(":")[1].toInt()
         }
-        val pingMessage = UDPFormat("ping", "ping")
-        val connectMessage = UDPFormat("connect", "connect")
+        val pingMessage = ByteArray(0)
         GlobalScope.launch {
             launch {
                 while (true) {
-                    P2PLog.logger?.d(status)
                     try {
-                        if (status == "ping") {
-                            channel.send(connectMessage)
-                        } else if (status == "connect") {
-                            break
-                        } else {
+                        if (status == ""){
                             channel.send(pingMessage)
+                        }else{
+                            for(i in 0 until 5){
+                                channel.send(pingMessage)
+                                delay(50)
+                            }
+                            break
                         }
                         delay(500)
                     } catch (e: Exception) {
@@ -70,11 +76,12 @@ class P2PManager {
                 }
             }
             launch {
-
-                while (status != "connect") {
+                while (status == "") {
                     try {
                         P2PLog.logger?.d(status)
-                        status = channel.receive(null).type
+                        channel.internalReceive().let {
+                            status = "new_packet"
+                        }
                     } catch (e: Exception) {
                         P2PLog.logger?.d(e.message.toString())
                     }
@@ -83,7 +90,7 @@ class P2PManager {
         }
 
         while (true) {
-            if (status == "connect") {
+            if (status != "") {
                 keepConnection()
                 return channel
             }
@@ -93,7 +100,7 @@ class P2PManager {
 
     fun keepConnection() = GlobalScope.launch {
         while (true) {
-            channel.send(UDPFormat("keep", "keep"))
+            channel.send(ByteArray(0))
             delay(10000)
         }
     }
