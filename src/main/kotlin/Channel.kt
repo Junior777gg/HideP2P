@@ -1,3 +1,5 @@
+import com.google.crypto.tink.HybridDecrypt
+import com.google.crypto.tink.HybridEncrypt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -6,7 +8,7 @@ import java.net.InetAddress
 import kotlin.experimental.xor
 import kotlin.random.Random
 
-class P2PChannel(val socket: DatagramSocket) {
+class P2PChannel(val socket: DatagramSocket, val peerEncryptor: HybridEncrypt, val myDecryptor: HybridDecrypt) {
     var remoteIp = ""
     var remotePort = 0
     var myIp = ""
@@ -14,7 +16,12 @@ class P2PChannel(val socket: DatagramSocket) {
 
     private val maxBytesInPacket = 1020
 
-    suspend fun send(data: ByteArray) = withContext(Dispatchers.IO) {
+    suspend fun send(rawData: ByteArray) = withContext(Dispatchers.IO) {
+        val data = if (rawData.isEmpty()) {
+            rawData
+        } else {
+            peerEncryptor.encrypt(rawData, null)
+        }
         val dataSize = data.size
 
         if (dataSize + 20 > maxBytesInPacket) {
@@ -78,7 +85,14 @@ class P2PChannel(val socket: DatagramSocket) {
             val port = (((message[14] xor message[1]).toInt() and 0xFF) shl 8) or ((message[15] xor message[2]).toInt() and 0xFF)
             val size = ((message[8].toInt() and 0xFF) shl 8) or (message[9].toInt() and 0xFF)
             if (ip == remoteIp && port == remotePort && size > 20) {
-                return message.copyOfRange(20, message.size)
+                val encryptedPayload = message.copyOfRange(20, message.size)
+                if (encryptedPayload.isEmpty()) continue
+                try {
+                    val decryptedBytes = myDecryptor.decrypt(encryptedPayload, null)
+                    return decryptedBytes
+                } catch (e: Exception) {
+                    continue
+                }
             }
         }
     }
