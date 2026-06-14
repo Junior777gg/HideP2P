@@ -47,10 +47,10 @@ class P2PChannel(
                 buffer[8] = (size shr 8).toByte()
                 buffer[9] = size.toByte()
                 val ip = myIp.split(".")
-                buffer[10] = ip[0].toByte() xor buffer[1]
-                buffer[11] = ip[1].toByte() xor buffer[2]
-                buffer[12] = ip[2].toByte() xor buffer[3]
-                buffer[13] = ip[3].toByte() xor buffer[4]
+                buffer[10] = ip[0].toInt().toByte() xor buffer[1]
+                buffer[11] = ip[1].toInt().toByte() xor buffer[2]
+                buffer[12] = ip[2].toInt().toByte() xor buffer[3]
+                buffer[13] = ip[3].toInt().toByte() xor buffer[4]
                 buffer[14] = (myPort shr 8).toByte() xor buffer[1]
                 buffer[15] = myPort.toByte() xor buffer[2]
                 System.arraycopy(data, (maxBytesInPacket - 20) * (i - 1), buffer, 20, size - 20)
@@ -69,10 +69,10 @@ class P2PChannel(
             buffer[8] = (buffer.size shr 8).toByte()
             buffer[9] = buffer.size.toByte()
             val ip = myIp.split(".")
-            buffer[10] = ip[0].toByte() xor buffer[1]
-            buffer[11] = ip[1].toByte() xor buffer[2]
-            buffer[12] = ip[2].toByte() xor buffer[3]
-            buffer[13] = ip[3].toByte() xor buffer[4]
+            buffer[10] = ip[0].toInt().toByte() xor buffer[1]
+            buffer[11] = ip[1].toInt().toByte() xor buffer[2]
+            buffer[12] = ip[2].toInt().toByte() xor buffer[3]
+            buffer[13] = ip[3].toInt().toByte() xor buffer[4]
             buffer[14] = (myPort shr 8).toByte() xor buffer[1]
             buffer[15] = myPort.toByte() xor buffer[2]
             System.arraycopy(data, 0, buffer, 20, dataSize)
