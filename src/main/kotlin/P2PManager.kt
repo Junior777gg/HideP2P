@@ -53,13 +53,13 @@ class P2PManager {
         return@withContext stream.toString("UTF-8")
     }
 
-    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String, peerPublicKeyJson: String, channelTimeoutMillis: Long): P2PChannel {
+    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String, peerPublicKeyJson: String): P2PChannel {
         val peerHandle = CleartextKeysetHandle.read(
             JsonKeysetReader.withBytes(peerPublicKeyJson.toByteArray())
         )
         val peerEncryptor = peerHandle.getPrimitive(HybridEncrypt::class.java)
         socket.soTimeout = 0
-        channel = P2PChannel(socket,channelTimeoutMillis ,peerEncryptor, myDecryptor)
+        channel = P2PChannel(socket ,peerEncryptor, myDecryptor)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
             val myLocalAddress = getLocalAddress()
             channel.myIp = myLocalAddress.split(":")[0]
