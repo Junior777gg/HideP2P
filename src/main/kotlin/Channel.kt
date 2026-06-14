@@ -2,13 +2,19 @@ import com.google.crypto.tink.HybridDecrypt
 import com.google.crypto.tink.HybridEncrypt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.experimental.xor
 import kotlin.random.Random
 
-class P2PChannel(val socket: DatagramSocket, val peerEncryptor: HybridEncrypt, val myDecryptor: HybridDecrypt) {
+class P2PChannel(
+    val socket: DatagramSocket,
+    val channelTimeoutMillis: Long,
+    val peerEncryptor: HybridEncrypt,
+    val myDecryptor: HybridDecrypt
+) {
     var remoteIp = ""
     var remotePort = 0
     var myIp = ""
@@ -75,25 +81,30 @@ class P2PChannel(val socket: DatagramSocket, val peerEncryptor: HybridEncrypt, v
     }
 
     suspend fun receive(): ByteArray {
-        while (true) {
-            val message = internalReceive()
-            val ip1 = (message[10] xor message[1]).toInt() and 0xff
-            val ip2 = (message[11] xor message[2]).toInt() and 0xff
-            val ip3 = (message[12] xor message[3]).toInt() and 0xff
-            val ip4 = (message[13] xor message[4]).toInt() and 0xff
-            val ip = "$ip1.$ip2.$ip3.$ip4"
-            val port = (((message[14] xor message[1]).toInt() and 0xFF) shl 8) or ((message[15] xor message[2]).toInt() and 0xFF)
-            val size = ((message[8].toInt() and 0xFF) shl 8) or (message[9].toInt() and 0xFF)
-            if (ip == remoteIp && port == remotePort && size > 20) {
-                val encryptedPayload = message.copyOfRange(20, message.size)
-                if (encryptedPayload.isEmpty()) continue
-                try {
-                    val decryptedBytes = myDecryptor.decrypt(encryptedPayload, null)
-                    return decryptedBytes
-                } catch (e: Exception) {
-                    continue
+        var decryptedResult: ByteArray? = null
+        return withTimeout(channelTimeoutMillis) {
+             while (decryptedResult == null) {
+                val message = internalReceive()
+                val ip1 = (message[10] xor message[1]).toInt() and 0xff
+                val ip2 = (message[11] xor message[2]).toInt() and 0xff
+                val ip3 = (message[12] xor message[3]).toInt() and 0xff
+                val ip4 = (message[13] xor message[4]).toInt() and 0xff
+                val ip = "$ip1.$ip2.$ip3.$ip4"
+                val port =
+                    (((message[14] xor message[1]).toInt() and 0xFF) shl 8) or ((message[15] xor message[2]).toInt() and 0xFF)
+                val size = ((message[8].toInt() and 0xFF) shl 8) or (message[9].toInt() and 0xFF)
+                if (ip == remoteIp && port == remotePort && size > 20) {
+                    val encryptedPayload = message.copyOfRange(20, message.size)
+                    if (encryptedPayload.isEmpty()) continue
+                    try {
+                        val decryptedBytes = myDecryptor.decrypt(encryptedPayload, null)
+                       decryptedResult = decryptedBytes
+                    } catch (e: Exception) {
+                        continue
+                    }
                 }
             }
+            return@withTimeout decryptedResult
         }
     }
 
@@ -128,7 +139,7 @@ class P2PChannel(val socket: DatagramSocket, val peerEncryptor: HybridEncrypt, v
                         massiveBuffer,
                         20 + (maxBytesInPacket - 20) * (num - 1),
                         currentSize - 20
-                        )
+                    )
                     received++
                 } else {
                     continue

@@ -15,15 +15,6 @@ import java.io.ByteArrayOutputStream
 import java.net.DatagramSocket
 import java.net.NetworkInterface
 
-interface P2PLogger {
-    fun d(message: String)
-    fun e(message: String, error: Throwable? = null)
-}
-
-object P2PLog {
-    var logger: P2PLogger? = null
-}
-
 class P2PManager {
     init {
         try { TinkConfig.register() } catch (e: Exception) {}
@@ -62,13 +53,13 @@ class P2PManager {
         return@withContext stream.toString("UTF-8")
     }
 
-    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String, peerPublicKeyJson: String): P2PChannel {
+    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String, peerPublicKeyJson: String, channelTimeoutMillis: Long): P2PChannel {
         val peerHandle = CleartextKeysetHandle.read(
             JsonKeysetReader.withBytes(peerPublicKeyJson.toByteArray())
         )
         val peerEncryptor = peerHandle.getPrimitive(HybridEncrypt::class.java)
         socket.soTimeout = 0
-        channel = P2PChannel(socket, peerEncryptor, myDecryptor)
+        channel = P2PChannel(socket,channelTimeoutMillis ,peerEncryptor, myDecryptor)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
             val myLocalAddress = getLocalAddress()
             channel.myIp = myLocalAddress.split(":")[0]
@@ -98,19 +89,18 @@ class P2PManager {
                         }
                         delay(500)
                     } catch (e: Exception) {
-                        P2PLog.logger?.d(e.message.toString())
+                        e.printStackTrace()
                     }
                 }
             }
             launch {
                 while (status == "") {
                     try {
-                        P2PLog.logger?.d(status)
                         channel.internalReceive().let {
                             status = "new_packet"
                         }
                     } catch (e: Exception) {
-                        P2PLog.logger?.d(e.message.toString())
+                        e.printStackTrace()
                     }
                 }
             }
@@ -128,7 +118,7 @@ class P2PManager {
     fun keepConnection() = GlobalScope.launch {
         while (true) {
             channel.send(ByteArray(0))
-            delay(10000)
+            delay(3000)
         }
     }
 }
