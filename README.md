@@ -1,4 +1,4 @@
-<img src="docs/logo.png" width="128">
+<img src="docs/logo_border.png" width="192">
 
 # HideP2P
 Библиотека для работы по Peer-to-Peer
