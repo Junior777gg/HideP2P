@@ -3,6 +3,7 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 
 object StunManager {
+    var stunAdress = "stun.cloudflare.com:3478"
     fun getAddress(socket: DatagramSocket): String? {
         val title = ByteArray(20)
         title[0] = 0x00; title[1] = 0x01; title[2] = 0x00; title[3] = 0x00
@@ -11,7 +12,7 @@ object StunManager {
         socket.send(
             DatagramPacket(
                 title, title.size,
-                InetAddress.getByName("stun.cloudflare.com"), 3478
+                InetAddress.getByName(stunAdress.split(":")[0]), stunAdress.split(":")[1].toInt(),
             )
         )
         try {

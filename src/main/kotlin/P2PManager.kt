@@ -6,19 +6,36 @@ import com.google.crypto.tink.JsonKeysetWriter
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.config.TinkConfig
 import com.google.crypto.tink.hybrid.HybridKeyTemplates
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.net.DatagramSocket
 import java.net.NetworkInterface
 
+interface Log {
+    fun log(message: String)
+}
+
+object Logger {
+    lateinit var logger: Log
+}
+
 class P2PManager {
     init {
-        try { TinkConfig.register() } catch (e: Exception) {}
+        try {
+            TinkConfig.register()
+        } catch (e: Exception) {
+            Logger.logger.log(e.message?:"")
+        }
     }
+
+    private lateinit var keepScope: Job
     private val socket = DatagramSocket()
     private val address = StunManager.getAddress(socket)
     lateinit var channel: P2PChannel
@@ -44,6 +61,7 @@ class P2PManager {
         }
         return@withContext "$localIp:${socket.localPort}"
     }
+
     suspend fun getPublicKeyJson(): String = withContext(Dispatchers.IO) {
         val stream = ByteArrayOutputStream()
         CleartextKeysetHandle.write(
@@ -53,13 +71,17 @@ class P2PManager {
         return@withContext stream.toString("UTF-8")
     }
 
-    suspend fun createConnection(remoteAddress: String, remoteLocalAddress: String, peerPublicKeyJson: String): P2PChannel {
+    suspend fun createConnection(
+        remoteAddress: String,
+        remoteLocalAddress: String,
+        peerPublicKeyJson: String,
+    ): P2PChannel {
         val peerHandle = CleartextKeysetHandle.read(
             JsonKeysetReader.withBytes(peerPublicKeyJson.toByteArray())
         )
         val peerEncryptor = peerHandle.getPrimitive(HybridEncrypt::class.java)
         socket.soTimeout = 0
-        channel = P2PChannel(socket ,peerEncryptor, myDecryptor)
+        channel = P2PChannel(socket, peerEncryptor, myDecryptor)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
             val myLocalAddress = getLocalAddress()
             channel.myIp = myLocalAddress.split(":")[0]
@@ -78,18 +100,18 @@ class P2PManager {
             launch {
                 while (true) {
                     try {
-                        if (status == ""){
+                        if (status == "") {
                             channel.send(pingMessage)
-                        }else{
-                            for(i in 0 until 5){
+                        } else {
+                            for (i in 0 until 5) {
                                 channel.send(pingMessage)
-                                delay(50)
+                                delay(100)
                             }
                             break
                         }
-                        delay(500)
+                        delay(1000)
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        Logger.logger.log(e.message?:"")
                     }
                 }
             }
@@ -100,7 +122,7 @@ class P2PManager {
                             status = "new_packet"
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        Logger.logger.log(e.message?:"")
                     }
                 }
             }
@@ -115,10 +137,19 @@ class P2PManager {
         }
     }
 
-    fun keepConnection() = GlobalScope.launch {
-        while (true) {
-            channel.send(ByteArray(0))
-            delay(3000)
+    internal fun keepConnection(){
+        keepScope = CoroutineScope(Dispatchers.IO).launch {
+            while (true) {
+                if (this.isActive) {
+                    channel.send(ByteArray(0))
+                    delay(5000)
+                }
+            }
         }
+    }
+
+    fun breakConnection() {
+        keepScope.cancel()
+        channel.closeChannel()
     }
 }

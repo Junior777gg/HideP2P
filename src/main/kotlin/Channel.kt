@@ -5,7 +5,7 @@ import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
-import kotlin.experimental.xor
+import kotlin.math.ceil
 import kotlin.random.Random
 
 class P2PChannel(
@@ -27,79 +27,103 @@ class P2PChannel(
             peerEncryptor.encrypt(rawData, null)
         }
         val dataSize = data.size
+        val ip = myIp.split(".")
 
         if (dataSize + 20 > maxBytesInPacket) {
             try {
-                val packetCount = dataSize / (maxBytesInPacket - 20) + 1
-                val random = Random.nextInt(256)
-                for (i in 1..packetCount) {
-                    val size = minOf(maxBytesInPacket - 20, (dataSize - (maxBytesInPacket - 20) * (i - 1))) + 20
+                val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
+                val random = Random.nextInt(1, 256)
+                for (i in 0 until packetCount) {
+                    val size = minOf(maxBytesInPacket - 20, (dataSize - (maxBytesInPacket - 20) * i)) + 20
                     val buffer = ByteArray(size)
-                    buffer[0] = 0x40
-                    buffer[1] = Random.nextInt(256).toByte()
-                    buffer[2] = Random.nextInt(256).toByte()
-                    buffer[3] = Random.nextInt(256).toByte()
-                    buffer[4] = Random.nextInt(256).toByte()
-                    buffer[5] = i.toByte()
-                    buffer[6] = random.toByte()
-                    buffer[7] = packetCount.toByte()
-                    buffer[8] = (size shr 8).toByte()
-                    buffer[9] = size.toByte()
-                    val ip = myIp.split(".")
-                    buffer[10] = ip[0].toInt().toByte() xor buffer[1]
-                    buffer[11] = ip[1].toInt().toByte() xor buffer[2]
-                    buffer[12] = ip[2].toInt().toByte() xor buffer[3]
-                    buffer[13] = ip[3].toInt().toByte() xor buffer[4]
-                    buffer[14] = (myPort shr 8).toByte() xor buffer[1]
-                    buffer[15] = myPort.toByte() xor buffer[2]
-                    System.arraycopy(data, (maxBytesInPacket - 20) * (i - 1), buffer, 20, size - 20)
+                    buffer[0] = i.toByte()
+                    buffer[1] = random.toByte()
+                    buffer[2] = (packetCount shr 8).toByte()
+                    buffer[3] = packetCount.toByte()
+                    buffer[4] = (size shr 8).toByte()
+                    buffer[5] = size.toByte()
+                    buffer[6] = ip[0].toInt().toByte()
+                    buffer[7] = ip[1].toInt().toByte()
+                    buffer[8] = ip[2].toInt().toByte()
+                    buffer[9] = ip[3].toInt().toByte()
+                    buffer[10] = (myPort shr 8).toByte()
+                    buffer[11] = myPort.toByte()
+                    System.arraycopy(data, (maxBytesInPacket - 20) * i, buffer, 20, size - 20)
                     socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+                    Logger.logger.log(size.toString())
                 }
-            } catch (e: Exception) {}
-        } else {
+            } catch (e: Exception) {
+                Logger.logger.log(e.message?:"")
+            }
+        }else if (dataSize == 0) {
             try {
-                val buffer = ByteArray(dataSize + 20)
-                buffer[0] = 0x40
-                buffer[1] = Random.nextInt(256).toByte()
-                buffer[2] = Random.nextInt(256).toByte()
-                buffer[3] = Random.nextInt(256).toByte()
-                buffer[4] = Random.nextInt(256).toByte()
-                buffer[5] = 0x01
-                buffer[6] = Random.nextInt(256).toByte()
-                buffer[7] = 0x01
-                buffer[8] = (buffer.size shr 8).toByte()
-                buffer[9] = buffer.size.toByte()
-                val ip = myIp.split(".")
-                buffer[10] = ip[0].toInt().toByte() xor buffer[1]
-                buffer[11] = ip[1].toInt().toByte() xor buffer[2]
-                buffer[12] = ip[2].toInt().toByte() xor buffer[3]
-                buffer[13] = ip[3].toInt().toByte() xor buffer[4]
-                buffer[14] = (myPort shr 8).toByte() xor buffer[1]
-                buffer[15] = myPort.toByte() xor buffer[2]
+                val buffer = ByteArray(20)
+                buffer[0] = 0x00
+                buffer[1] = 0x00
+                buffer[2] = (1 shr 8).toByte()
+                buffer[3] = 1.toByte()
+                buffer[4] = (20 shr 8).toByte()
+                buffer[5] = 20.toByte()
+                buffer[6] = ip[0].toInt().toByte()
+                buffer[7] = ip[1].toInt().toByte()
+                buffer[8] = ip[2].toInt().toByte()
+                buffer[9] = ip[3].toInt().toByte()
+                buffer[10] = (myPort shr 8).toByte()
+                buffer[11] = myPort.toByte()
                 System.arraycopy(data, 0, buffer, 20, dataSize)
                 socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                Logger.logger.log(e.message?:"")
+            }
+        }else
+         {
+            try {
+                val buffer = ByteArray(dataSize + 20)
+                buffer[0]= 0x00
+                buffer[1] = 0x00
+                buffer[2] = (1 shr 8).toByte()
+                buffer[3] = 1.toByte()
+                buffer[4] = (buffer.size shr 8).toByte()
+                buffer[5] = buffer.size.toByte()
+                buffer[6] = ip[0].toInt().toByte()
+                buffer[7] = ip[1].toInt().toByte()
+                buffer[8] = ip[2].toInt().toByte()
+                buffer[9] = ip[3].toInt().toByte()
+                buffer[10] = (myPort shr 8).toByte()
+                buffer[11] = myPort.toByte()
+                System.arraycopy(data, 0, buffer, 20, dataSize)
+                socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+            } catch (e: Exception) {
+                Logger.logger.log(e.message?:"")
+            }
         }
     }
 
     suspend fun receive(): ByteArray {
         while (true) {
             val message = internalReceive()
-            val ip1 = (message[10] xor message[1]).toInt() and 0xff
-            val ip2 = (message[11] xor message[2]).toInt() and 0xff
-            val ip3 = (message[12] xor message[3]).toInt() and 0xff
-            val ip4 = (message[13] xor message[4]).toInt() and 0xff
+            if (message.size < 20){
+                continue
+            }
+            val ip1 = message[6].toInt() and 0xff
+            val ip2 = message[7].toInt() and 0xff
+            val ip3 = message[8].toInt() and 0xff
+            val ip4 = message[9].toInt() and 0xff
             val ip = "$ip1.$ip2.$ip3.$ip4"
             val port =
-                (((message[14] xor message[1]).toInt() and 0xFF) shl 8) or ((message[15] xor message[2]).toInt() and 0xFF)
-            val size = ((message[8].toInt() and 0xFF) shl 8) or (message[9].toInt() and 0xFF)
-            if (ip == remoteIp && port == remotePort && size > 20) {
+                ((message[10].toInt() and 0xFF) shl 8) or (message[11].toInt() and 0xFF)
+            remotePort = port
+            if (message.isEmpty()) {
+                continue
+            }
+            if (ip == remoteIp) {
                 val encryptedPayload = message.copyOfRange(20, message.size)
                 if (encryptedPayload.isEmpty()) continue
                 try {
                     val decryptedBytes = myDecryptor.decrypt(encryptedPayload, null)
                     return decryptedBytes
                 } catch (e: Exception) {
+                    Logger.logger.log(e.message?:"")
                     continue
                 }
             }
@@ -110,11 +134,12 @@ class P2PChannel(
 
     internal suspend fun internalReceive(): ByteArray = withContext(Dispatchers.IO) {
         val buffer = ByteArray(maxBytesInPacket)
-        socket.receive(DatagramPacket(buffer, buffer.size))
-        val count = buffer[7].toInt() and 0xff
-        val id = buffer[6].toInt() and 0xff
-        val size = ((buffer[8].toInt() and 0xFF) shl 8) or (buffer[9].toInt() and 0xFF)
-        val firstNum = buffer[5].toInt() and 0xff
+        val packet = DatagramPacket(buffer, buffer.size)
+        socket.receive(packet)
+        val count = ((buffer[2].toInt() and 0xFF) shl 8) or (buffer[3].toInt() and 0xFF)
+        val id = buffer[1].toInt() and 0xff
+        val size = ((buffer[4].toInt() and 0xFF) shl 8) or (buffer[5].toInt() and 0xFF)
+        val num = buffer[0].toInt() and 0xFF
         var totalSize = size
         if (count > 1) {
             var received = 1
@@ -124,20 +149,21 @@ class P2PChannel(
                 buffer,
                 20,
                 massiveBuffer,
-                20 + (maxBytesInPacket - 20) * (firstNum - 1),
+                20 + (maxBytesInPacket - 20) * num,
                 size - 20
             )
             while (received < count) {
+                Logger.logger.log("фыфыфыфыфыфыфыфыфыфыфыфыфыф")
                 socket.receive(DatagramPacket(buffer, buffer.size))
-                if (id == buffer[6].toInt() and 0xff) {
-                    val num = buffer[5].toInt() and 0xff
-                    val currentSize = ((buffer[8].toInt() and 0xFF) shl 8) or (buffer[9].toInt() and 0xFF)
+                if ((id == buffer[1].toInt() and 0xff) and (count ==((buffer[2].toInt() and 0xFF) shl 8) or (buffer[3].toInt() and 0xFF))) {
+                    val num = buffer[0].toInt() and 0xff
+                    val currentSize = ((buffer[4].toInt() and 0xFF) shl 8) or (buffer[5].toInt() and 0xFF)
                     totalSize += (currentSize - 20)
                     System.arraycopy(
                         buffer,
                         20,
                         massiveBuffer,
-                        20 + (maxBytesInPacket - 20) * (num - 1),
+                        20 + (maxBytesInPacket - 20) * num,
                         currentSize - 20
                     )
                     received++
@@ -145,10 +171,16 @@ class P2PChannel(
                     continue
                 }
             }
+            Logger.logger.log("receive $totalSize bytes gg vp gg vp")
             return@withContext massiveBuffer.copyOfRange(0, totalSize)
 
         } else {
+            Logger.logger.log("receive $size bytes")
             return@withContext buffer.copyOfRange(0, size)
         }
+    }
+
+    fun closeChannel(){
+        socket.close()
     }
 }
