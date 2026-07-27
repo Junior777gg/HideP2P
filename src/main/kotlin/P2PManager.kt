@@ -31,7 +31,7 @@ class P2PManager {
         try {
             TinkConfig.register()
         } catch (e: Exception) {
-            Logger.logger.log(e.message?:"")
+            Logger.logger.log(e.message ?: "")
         }
     }
 
@@ -111,20 +111,15 @@ class P2PManager {
                         }
                         delay(1000)
                     } catch (e: Exception) {
-                        Logger.logger.log(e.message?:"")
+                        Logger.logger.log(e.message ?: "")
                     }
                 }
             }
             launch {
                 while (status == "") {
-                    try {
-                        channel.internalReceive().let {
-                            status = "new_packet"
-                        }
-                    } catch (e: Exception) {
-                        Logger.logger.log(e.message?:"")
-                    }
-                }
+                    status = channel.status
+                    Logger.logger.log(status)
+                    delay(500)               }
             }
         }
 
@@ -137,7 +132,7 @@ class P2PManager {
         }
     }
 
-    internal fun keepConnection(){
+    internal fun keepConnection() {
         keepScope = CoroutineScope(Dispatchers.IO).launch {
             while (true) {
                 if (this.isActive) {
