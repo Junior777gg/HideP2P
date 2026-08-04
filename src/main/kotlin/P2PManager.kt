@@ -26,7 +26,7 @@ object Logger {
     lateinit var logger: Log
 }
 
-class P2PManager {
+class P2PManager(val tempDir: String,){
     init {
         try {
             TinkConfig.register()
@@ -39,7 +39,7 @@ class P2PManager {
     private val socket = DatagramSocket()
     private val address = StunManager.getAddress(socket)
     lateinit var channel: P2PChannel
-
+    val pingMessage = ByteArray(0)
     @Volatile
     var status = ""
     private val myKeysetHandle = KeysetHandle.generateNew(
@@ -81,7 +81,7 @@ class P2PManager {
         )
         val peerEncryptor = peerHandle.getPrimitive(HybridEncrypt::class.java)
         socket.soTimeout = 0
-        channel = P2PChannel(socket, peerEncryptor, myDecryptor)
+        channel = P2PChannel(tempDir,socket, peerEncryptor, myDecryptor)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
             val myLocalAddress = getLocalAddress()
             channel.myIp = myLocalAddress.split(":")[0]
@@ -95,7 +95,6 @@ class P2PManager {
             channel.remoteIp = remoteAddress.split(":")[0]
             channel.remotePort = remoteAddress.split(":")[1].toInt()
         }
-        val pingMessage = ByteArray(0)
         GlobalScope.launch {
             launch {
                 while (true) {
@@ -136,7 +135,7 @@ class P2PManager {
         keepScope = CoroutineScope(Dispatchers.IO).launch {
             while (true) {
                 if (this.isActive) {
-                    channel.send(ByteArray(0))
+                    channel.send(pingMessage)
                     delay(5000)
                 }
             }
