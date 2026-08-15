@@ -42,6 +42,7 @@ class P2PChannel(
         val dataSize = rawData.size
         val ip = myIp.split(".")
 
+        //Big packet (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
             try {
                 val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
@@ -72,12 +73,14 @@ class P2PChannel(
                     System.arraycopy(rawData, (maxBytesInPacket - 20) * i, buffer, 20, size - 20)
                     sendData.getOrPut(random) { mutableMapOf() }[i] = buffer
                     socket.send(DatagramPacket(buffer, size, InetAddress.getByName(remoteIp), remotePort))
-                    Logger.logger.log(i.toString())
+                    Logger.logger.log("Sent message #$i (size: $size)")
                 }
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send ByteArray: "+(e.message ?: "empty error"))
             }
-        } else if (dataSize == 0) {
+        }
+        //System packet
+        else if (dataSize == 0) {
             try {
                 val random = Random.nextInt(65536)
                 val buffer = ByteArray(20)
@@ -104,9 +107,11 @@ class P2PChannel(
                 System.arraycopy(rawData, 0, buffer, 20, dataSize)
                 socket.send(DatagramPacket(buffer, 20, InetAddress.getByName(remoteIp), remotePort))
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send ByteArray: "+(e.message ?: "empty error"))
             }
-        } else {
+        }
+        //Normal packet
+        else {
             try {
                 val random = Random.nextInt(65536)
                 val buffer = ByteArray(dataSize + 20)
@@ -132,9 +137,9 @@ class P2PChannel(
                 buffer[19] = code
                 System.arraycopy(rawData, 0, buffer, 20, dataSize)
                 socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
-                Logger.logger.log("fffffffffffffffffffffff")
+                Logger.logger.log("Sent message (size: ${buffer.size})")
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send ByteArray: "+(e.message ?: "empty error"))
             }
         }
     }
@@ -143,6 +148,7 @@ class P2PChannel(
         val dataSize = stream.available()
         val ip = myIp.split(".")
 
+        //Big stream (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
             try {
                 val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
@@ -176,11 +182,13 @@ class P2PChannel(
                     Logger.logger.log(i.toString())
                 }
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send InputStream: "+(e.message ?: "empty error"))
             } finally {
                 stream.close()
             }
-        } else {
+        }
+        //Noraml/zero stream
+        else {
             try {
                 val random = Random.nextInt(65536)
                 val buffer = ByteArray(dataSize + 20)
@@ -207,7 +215,7 @@ class P2PChannel(
                 stream.readNBytes(buffer, 20, dataSize)
                 socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send InputStream: "+(e.message ?: "empty error"))
             } finally {
                 stream.close()
             }
@@ -219,6 +227,7 @@ class P2PChannel(
         val stream = file.inputStream()
         val ip = myIp.split(".")
 
+        //Big file (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
             try {
                 val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
@@ -253,11 +262,13 @@ class P2PChannel(
                     Logger.logger.log(i.toString())
                 }
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send File: "+(e.message ?: "empty error"))
             } finally {
                 stream.close()
             }
-        } else {
+        }
+        //Normal/zero file
+        else {
             try {
                 val random = Random.nextInt(65536)
                 val buffer = ByteArray(dataSize + 20)
@@ -284,7 +295,7 @@ class P2PChannel(
                 stream.readNBytes(buffer, 20, dataSize)
                 socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "")
+                Logger.logger.log("Failed to send File: "+(e.message ?: "empty error"))
             } finally {
                 stream.close()
             }
@@ -301,16 +312,14 @@ class P2PChannel(
             if (ip == remoteIp) {
                 //val encryptedPayload = message.copyOfRange(20, message.size)
                 try {
-                    Logger.logger.log("kj[")
+                    Logger.logger.log("Received message from ${ip}:${port}")
                     return message
-
                 } catch (e: Exception) {
                     Logger.logger.log(e.message ?: "")
                     continue
                 }
             } else {
                 continue
-
             }
         }
     }
@@ -460,5 +469,4 @@ class P2PChannel(
     fun closeChannel() {
         socket.close()
     }
-
 }
