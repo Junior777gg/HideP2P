@@ -1,3 +1,4 @@
+import P2PManager.Companion.forkInfo
 import com.google.crypto.tink.HybridDecrypt
 import com.google.crypto.tink.HybridEncrypt
 import kotlinx.coroutines.CoroutineScope
@@ -20,8 +21,6 @@ import kotlin.random.Random
 class P2PChannel(
     val tempDir: String,
     val socket: DatagramSocket,
-    val peerEncryptor: HybridEncrypt,
-    val myDecryptor: HybridDecrypt
 ) {
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -37,6 +36,12 @@ class P2PChannel(
     private val sendData = mutableMapOf<Int, MutableMap<Int, ByteArray>>()
     private val maxBytesInPacket = 1020
     private val messageReceiver = Channel<Pair<String, Messages>>(Channel.UNLIMITED)
+
+    suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
+        val buffer = ByteArray(bytes.size + 8)
+        System.arraycopy(bytes, 0, buffer, 8, bytes.size)
+        socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+    }
 
     suspend fun send(rawData: ByteArray, code: Byte = 0.toByte()) = withContext(Dispatchers.IO) {
         val dataSize = rawData.size
@@ -334,6 +339,10 @@ class P2PChannel(
                 socket.receive(packet)
                 status = "new_packet"
                 if (packet.length == 20) {
+                    continue
+                }
+                if(buffer.copyOfRange(0,7).all {it == 0.toByte()}) {
+                    forkInfo = buffer.decodeToString()
                     continue
                 }
                 if (packet.length == 6) {

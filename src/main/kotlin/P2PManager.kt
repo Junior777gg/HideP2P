@@ -1,11 +1,3 @@
-import com.google.crypto.tink.CleartextKeysetHandle
-import com.google.crypto.tink.HybridDecrypt
-import com.google.crypto.tink.HybridEncrypt
-import com.google.crypto.tink.JsonKeysetReader
-import com.google.crypto.tink.JsonKeysetWriter
-import com.google.crypto.tink.KeysetHandle
-import com.google.crypto.tink.config.TinkConfig
-import com.google.crypto.tink.hybrid.HybridKeyTemplates
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -14,7 +6,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
 import java.net.DatagramSocket
 import java.net.NetworkInterface
 
@@ -26,12 +17,24 @@ object Logger {
     lateinit var logger: Log
 }
 
-class P2PManager(val tempDir: String,){
-    init {
-        try {
-            TinkConfig.register()
-        } catch (e: Exception) {
-            Logger.logger.log(e.message ?: "")
+class P2PManager(val tempDir: String) {
+    companion object {
+        var forkInfo = ""
+    }
+
+    suspend fun fork(): P2PManager?{
+        return try {
+            val manager = P2PManager(tempDir)
+            channel.sendFork("${manager.getAddress()}&${manager.getLocalAddress()}".encodeToByteArray())
+            while (forkInfo == ""){
+                delay(100)
+            }
+            val split = forkInfo.split("&")
+            manager.createConnection(split[0], split[1])
+            Logger.logger.log("fork successful")
+            manager
+        }catch (_: Exception){
+            null
         }
     }
 
@@ -42,10 +45,6 @@ class P2PManager(val tempDir: String,){
     val pingMessage = ByteArray(0)
     @Volatile
     var status = ""
-    private val myKeysetHandle = KeysetHandle.generateNew(
-        HybridKeyTemplates.ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM
-    )
-    private val myDecryptor: HybridDecrypt = myKeysetHandle.getPrimitive(HybridDecrypt::class.java)
 
     suspend fun getAddress() = withContext(Dispatchers.IO) { return@withContext address }
     suspend fun getLocalAddress() = withContext(Dispatchers.IO) {
@@ -62,26 +61,12 @@ class P2PManager(val tempDir: String,){
         return@withContext "$localIp:${socket.localPort}"
     }
 
-    suspend fun getPublicKeyJson(): String = withContext(Dispatchers.IO) {
-        val stream = ByteArrayOutputStream()
-        CleartextKeysetHandle.write(
-            myKeysetHandle.publicKeysetHandle,
-            JsonKeysetWriter.withOutputStream(stream)
-        )
-        return@withContext stream.toString("UTF-8")
-    }
-
     suspend fun createConnection(
         remoteAddress: String,
         remoteLocalAddress: String,
-        peerPublicKeyJson: String,
     ): P2PChannel {
-        val peerHandle = CleartextKeysetHandle.read(
-            JsonKeysetReader.withBytes(peerPublicKeyJson.toByteArray())
-        )
-        val peerEncryptor = peerHandle.getPrimitive(HybridEncrypt::class.java)
         socket.soTimeout = 0
-        channel = P2PChannel(tempDir,socket, peerEncryptor, myDecryptor)
+        channel = P2PChannel(tempDir,socket)
         if (address?.split(":")[0] == remoteAddress.split(":")[0]) {
             val myLocalAddress = getLocalAddress()
             channel.myIp = myLocalAddress.split(":")[0]
