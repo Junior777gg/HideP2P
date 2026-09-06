@@ -1,6 +1,5 @@
+import P2PManager.Companion.forkId
 import P2PManager.Companion.forkInfo
-import com.google.crypto.tink.HybridDecrypt
-import com.google.crypto.tink.HybridEncrypt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
@@ -14,13 +13,14 @@ import java.io.InputStream
 import java.io.RandomAccessFile
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import kotlin.math.ceil
 import kotlin.random.Random
 
 class P2PChannel(
     val tempDir: String,
     val socket: DatagramSocket,
+    val inetSocketAddress: InetSocketAddress,
 ) {
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -28,24 +28,19 @@ class P2PChannel(
         }
     }
 
-    var remoteIp = ""
-    var remotePort = 0
-    var myIp = ""
-    var myPort = 0
     internal var status = ""
     private val sendData = mutableMapOf<Int, MutableMap<Int, ByteArray>>()
     private val maxBytesInPacket = 1020
-    private val messageReceiver = Channel<Pair<String, Messages>>(Channel.UNLIMITED)
+    private val messageReceiver = Channel<Messages>(Channel.UNLIMITED)
 
     suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
         val buffer = ByteArray(bytes.size + 8)
         System.arraycopy(bytes, 0, buffer, 8, bytes.size)
-        socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+        socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
     }
 
     suspend fun send(rawData: ByteArray, code: Byte = 0.toByte()) = withContext(Dispatchers.IO) {
         val dataSize = rawData.size
-        val ip = myIp.split(".")
 
         //Big packet (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
@@ -67,17 +62,11 @@ class P2PChannel(
                     buffer[9] = packetCount.toByte()
                     buffer[10] = (size shr 8).toByte()
                     buffer[11] = size.toByte()
-                    buffer[12] = ip[0].toInt().toByte()
-                    buffer[13] = ip[1].toInt().toByte()
-                    buffer[14] = ip[2].toInt().toByte()
-                    buffer[15] = ip[3].toInt().toByte()
-                    buffer[16] = (myPort shr 8).toByte()
-                    buffer[17] = myPort.toByte()
                     buffer[18] = 0.toByte() // bytearray
                     buffer[19] = code
                     System.arraycopy(rawData, (maxBytesInPacket - 20) * i, buffer, 20, size - 20)
                     sendData.getOrPut(random) { mutableMapOf() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, InetAddress.getByName(remoteIp), remotePort))
+                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
                     Logger.logger.log("Sent message #$i (size: $size)")
                 }
             } catch (e: Exception) {
@@ -101,16 +90,10 @@ class P2PChannel(
                 buffer[9] = 1.toByte()
                 buffer[10] = (20 shr 8).toByte()
                 buffer[11] = 20.toByte()
-                buffer[12] = ip[0].toInt().toByte()
-                buffer[13] = ip[1].toInt().toByte()
-                buffer[14] = ip[2].toInt().toByte()
-                buffer[15] = ip[3].toInt().toByte()
-                buffer[16] = (myPort shr 8).toByte()
-                buffer[17] = myPort.toByte()
                 buffer[18] = 0.toByte() // bytearray
                 buffer[19] = code
                 System.arraycopy(rawData, 0, buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, 20, InetAddress.getByName(remoteIp), remotePort))
+                socket.send(DatagramPacket(buffer, 20, inetSocketAddress))
             } catch (e: Exception) {
                 Logger.logger.log("Failed to send ByteArray: "+(e.message ?: "empty error"))
             }
@@ -132,16 +115,10 @@ class P2PChannel(
                 buffer[9] = 1.toByte()
                 buffer[10] = (buffer.size shr 8).toByte()
                 buffer[11] = (buffer.size).toByte()
-                buffer[12] = ip[0].toInt().toByte()
-                buffer[13] = ip[1].toInt().toByte()
-                buffer[14] = ip[2].toInt().toByte()
-                buffer[15] = ip[3].toInt().toByte()
-                buffer[16] = (myPort shr 8).toByte()
-                buffer[17] = myPort.toByte()
                 buffer[18] = 0.toByte() // bytearray
                 buffer[19] = code
                 System.arraycopy(rawData, 0, buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
                 Logger.logger.log("Sent message (size: ${buffer.size})")
             } catch (e: Exception) {
                 Logger.logger.log("Failed to send ByteArray: "+(e.message ?: "empty error"))
@@ -151,7 +128,6 @@ class P2PChannel(
 
     suspend fun send(stream: InputStream, code: Byte) = withContext(Dispatchers.IO) {
         val dataSize = stream.available()
-        val ip = myIp.split(".")
 
         //Big stream (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
@@ -173,17 +149,11 @@ class P2PChannel(
                     buffer[9] = packetCount.toByte()
                     buffer[10] = (size shr 8).toByte()
                     buffer[11] = size.toByte()
-                    buffer[12] = ip[0].toInt().toByte()
-                    buffer[13] = ip[1].toInt().toByte()
-                    buffer[14] = ip[2].toInt().toByte()
-                    buffer[15] = ip[3].toInt().toByte()
-                    buffer[16] = (myPort shr 8).toByte()
-                    buffer[17] = myPort.toByte()
                     buffer[18] = 1.toByte() // file
                     buffer[19] = code
                     stream.readNBytes(buffer, 20, size - 20)
                     sendData.getOrPut(random) { mutableMapOf() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, InetAddress.getByName(remoteIp), remotePort))
+                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
                     Logger.logger.log(i.toString())
                 }
             } catch (e: Exception) {
@@ -209,16 +179,10 @@ class P2PChannel(
                 buffer[9] = 1.toByte()
                 buffer[10] = (buffer.size shr 8).toByte()
                 buffer[11] = (buffer.size).toByte()
-                buffer[12] = ip[0].toInt().toByte()
-                buffer[13] = ip[1].toInt().toByte()
-                buffer[14] = ip[2].toInt().toByte()
-                buffer[15] = ip[3].toInt().toByte()
-                buffer[16] = (myPort shr 8).toByte()
-                buffer[17] = myPort.toByte()
                 buffer[18] = 1.toByte() // file
                 buffer[19] = code
                 stream.readNBytes(buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
             } catch (e: Exception) {
                 Logger.logger.log("Failed to send InputStream: "+(e.message ?: "empty error"))
             } finally {
@@ -230,7 +194,6 @@ class P2PChannel(
     suspend fun send(file: File, code: Byte) = withContext(Dispatchers.IO) {
         val dataSize = file.length().toInt()
         val stream = file.inputStream()
-        val ip = myIp.split(".")
 
         //Big file (1020+ bytes)
         if (dataSize + 20 > maxBytesInPacket) {
@@ -253,17 +216,11 @@ class P2PChannel(
                     buffer[9] = packetCount.toByte()
                     buffer[10] = (size shr 8).toByte()
                     buffer[11] = size.toByte()
-                    buffer[12] = ip[0].toInt().toByte()
-                    buffer[13] = ip[1].toInt().toByte()
-                    buffer[14] = ip[2].toInt().toByte()
-                    buffer[15] = ip[3].toInt().toByte()
-                    buffer[16] = (myPort shr 8).toByte()
-                    buffer[17] = myPort.toByte()
                     buffer[18] = 1.toByte() // file
                     buffer[19] = code
                     stream.readNBytes(buffer, 20, size - 20)
                     sendData.getOrPut(random) { mutableMapOf() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, InetAddress.getByName(remoteIp), remotePort))
+                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
                     Logger.logger.log(i.toString())
                 }
             } catch (e: Exception) {
@@ -289,16 +246,10 @@ class P2PChannel(
                 buffer[9] = 1.toByte()
                 buffer[10] = (buffer.size shr 8).toByte()
                 buffer[11] = (buffer.size).toByte()
-                buffer[12] = ip[0].toInt().toByte()
-                buffer[13] = ip[1].toInt().toByte()
-                buffer[14] = ip[2].toInt().toByte()
-                buffer[15] = ip[3].toInt().toByte()
-                buffer[16] = (myPort shr 8).toByte()
-                buffer[17] = myPort.toByte()
                 buffer[18] = 1.toByte() // file
                 buffer[19] = code
                 stream.readNBytes(buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, InetAddress.getByName(remoteIp), remotePort))
+                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
             } catch (e: Exception) {
                 Logger.logger.log("Failed to send File: "+(e.message ?: "empty error"))
             } finally {
@@ -309,23 +260,14 @@ class P2PChannel(
 
     suspend fun receive(): Messages {
         while (true) {
-            val pair = messageReceiver.receive()
-            val message = pair.second
-            val ip = pair.first.substringBefore("$")
-            val port = pair.first.substringAfter("$").toInt()
-            remotePort = port
-            if (ip == remoteIp) {
-                //val encryptedPayload = message.copyOfRange(20, message.size)
+            val message = messageReceiver.receive()
                 try {
-                    Logger.logger.log("Received message from ${ip}:${port}")
+                    Logger.logger.log("Received message")
                     return message
                 } catch (e: Exception) {
-                    Logger.logger.log(e.message ?: "")
+                    Logger.logger.log(e.message ?: "on receive error")
                     continue
                 }
-            } else {
-                continue
-            }
         }
     }
 
@@ -342,7 +284,7 @@ class P2PChannel(
                     continue
                 }
                 if(buffer.copyOfRange(0,7).all {it == 0.toByte()}) {
-                    forkInfo = buffer.decodeToString()
+                    forkInfo[forkId] = buffer.copyOfRange(8, packet.length).decodeToString()
                     continue
                 }
                 if (packet.length == 6) {
@@ -353,7 +295,7 @@ class P2PChannel(
                             (buffer[5].toInt() and 0xFF)
                     val data = sendData[currentId]!![currentNum]
                     socket.send(
-                        DatagramPacket(data, data!!.size, InetAddress.getByName(remoteIp), remotePort)
+                        DatagramPacket(data, data!!.size, inetSocketAddress)
                     )
                 } else if (buffer[0] == 0xFF.toByte() && packet.length == 3) {
                     val id = ((buffer[1].toInt() and 0xff) shl 8) or (buffer[2].toInt() and 0xFF)
@@ -379,19 +321,12 @@ class P2PChannel(
                             ((buffer[7].toInt() and 0xFF) shl 16) or
                             ((buffer[8].toInt() and 0xFF) shl 8) or
                             (buffer[9].toInt() and 0xFF)
-                    val ip1 = buffer[12].toInt() and 0xff
-                    val ip2 = buffer[13].toInt() and 0xff
-                    val ip3 = buffer[14].toInt() and 0xff
-                    val ip4 = buffer[15].toInt() and 0xff
-                    val ip = "$ip1.$ip2.$ip3.$ip4"
-                    val port =
-                        ((buffer[16].toInt() and 0xFF) shl 8) or (buffer[17].toInt() and 0xFF)
                     val isArray = if (buffer[18] == 0.toByte()) true else false
                     val code = buffer[19]
                     if (totalCount == 1) {
                         if (isArray) {
                             messageReceiver.send(
-                                "$ip$$port" to Messages.ByteMessage(buffer.copyOfRange(20, buffer.size), code)
+                                Messages.ByteMessage(buffer.copyOfRange(20, buffer.size), code)
                             )
                             mapOfBytes.remove(id)
                             return@launch
@@ -404,7 +339,7 @@ class P2PChannel(
                                 writeBytes(buffer.copyOfRange(20, buffer.size))
                             }
                             messageReceiver.send(
-                                "$ip$$port" to Messages.FileMessage(file, code)
+                                Messages.FileMessage(file, code)
                             )
                             mapOfBytes.remove(id)
                             return@launch
@@ -456,7 +391,7 @@ class P2PChannel(
                                                 (it shr 16).toByte(),
                                                 (it shr 8).toByte(),
                                                 it.toByte()
-                                            ), 6, InetAddress.getByName(remoteIp), remotePort
+                                            ), 6, inetSocketAddress
                                         )
                                     )
                                 }
@@ -465,9 +400,9 @@ class P2PChannel(
                         }
                         massiveBuffer.close()
                         if (isArray) {
-                            messageReceiver.send("$ip$$port" to Messages.ByteMessage(raf.readBytes(), code))
+                            messageReceiver.send(Messages.ByteMessage(raf.readBytes(), code))
                         } else {
-                            messageReceiver.send("$ip$$port" to Messages.FileMessage(raf, code))
+                            messageReceiver.send(Messages.FileMessage(raf, code))
                         }
                     }
                 }
