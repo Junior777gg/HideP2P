@@ -5,6 +5,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -16,8 +17,15 @@ data class ICECandidates(
     val localIpv6: InetSocketAddress?,
 )
 
+class TracedDatagramSocket(address: InetSocketAddress?): DatagramSocket(address) {
+    override fun close() {
+        val exception = Exception("Closed")
+        Logger.logger.log { exception.printStackTrace()}
+        super.close()
+    }
+}
 interface Log {
-    fun log(message: String)
+    fun log(lambda: () -> Unit)
 }
 
 object Logger {
@@ -56,19 +64,20 @@ class P2PManager(val tempDir: String) {
         }
     }
 
-    suspend fun fork(): P2PManager? {
-        return try {
+    fun fork(): P2PManager? = runBlocking(Dispatchers.IO){
+        return@runBlocking try {
             val manager = P2PManager(tempDir)
             channel.sendFork(manager.getICECandidates().encodeToByteArray())
             while (forkInfo[forkId] == null) {
                 delay(100)
             }
-            manager.createConnection(getICEFromString(forkInfo[forkId]!!))
+            val info = forkInfo[forkId]!!
             forkId++
-            Logger.logger.log("fork successful")
+            manager.createConnection(getICEFromString(info))
+            Logger.logger.log{println("fork successfully created")}
             manager
         } catch (e: Exception) {
-            Logger.logger.log(e.message ?: "fork failed")
+            Logger.logger.log{println(e.message ?: "fork failed")}
             null
         }
     }
@@ -77,12 +86,12 @@ class P2PManager(val tempDir: String) {
     private val myIpv4LocalAddress = StunManager.getLocalAddress(false)
     private val myIpv6LocalAddress = StunManager.getLocalAddress(true)
     private val socketIpv4 = try {
-        DatagramSocket(myIpv4LocalAddress)
+        TracedDatagramSocket(myIpv4LocalAddress)
     } catch (_: Exception) {
         null
     }
     private val socketIpv6 = try {
-        DatagramSocket(myIpv6LocalAddress)
+        TracedDatagramSocket(myIpv6LocalAddress)
     } catch (_: Exception) {
         null
     }
@@ -135,7 +144,7 @@ class P2PManager(val tempDir: String) {
                     }
                 }
             } catch (e: Exception) {
-                Logger.logger.log(e.message ?: "Connection failed")
+                Logger.logger.log{println(e.message ?: "Connection failed")}
             }
             launch {
                 while (true) {
@@ -151,7 +160,7 @@ class P2PManager(val tempDir: String) {
                         }
                         delay(1000)
                     } catch (e: Exception) {
-                        Logger.logger.log(e.message ?: "Connection failed")
+                        Logger.logger.log{println(e.message ?: "Connection failed")}
                     }
                 }
             }
@@ -160,7 +169,7 @@ class P2PManager(val tempDir: String) {
                     status = channel.status
                     delay(500)
                 }
-                Logger.logger.log(status)
+                Logger.logger.log{println(status)}
             }
         }
 
