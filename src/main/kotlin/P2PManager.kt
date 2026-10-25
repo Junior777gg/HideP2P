@@ -103,7 +103,6 @@ class P2PManager(val tempDir: String) {
     }
 
     lateinit var channel: P2PChannel
-    val pingMessage = ByteArray(0)
 
     @Volatile
     var status = ""
@@ -150,10 +149,10 @@ class P2PManager(val tempDir: String) {
                 while (true) {
                     try {
                         if (status == "") {
-                            channel.send(pingMessage)
+                            channel.sendPing()
                         } else {
                             for (i in 0 until 5) {
-                                channel.send(pingMessage)
+                                channel.sendPing()
                                 delay(100)
                             }
                             break
@@ -186,7 +185,7 @@ class P2PManager(val tempDir: String) {
         keepScope = CoroutineScope(Dispatchers.IO).launch {
             while (true) {
                 if (this.isActive) {
-                    channel.send(pingMessage)
+                    channel.sendPing()
                     delay(5000)
                 }
             }

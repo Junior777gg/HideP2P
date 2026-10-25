@@ -1,41 +1,85 @@
-import P2PManager.Companion.forkId
-import P2PManager.Companion.forkInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.InputStream
 import java.io.RandomAccessFile
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.util.BitSet
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.Any
+import kotlin.collections.List
+import kotlin.collections.mutableMapOf
 import kotlin.math.ceil
 import kotlin.random.Random
-import kotlin.time.Duration.Companion.seconds
+
+data class Packet(
+    val id: Int,
+    val random: Int,
+    val dataCount: Int,
+    val packetType: Int,
+    val className: String,
+    val number: Int,
+    val dataCounter: Int,
+    val packetCount: Int,
+    val data: ByteArray
+)
+
+interface Message
+data class Text(val text: String) : Message
+data class Bytes(val bytes: ByteArray) : Message
+data class File(val file: File) : Message
 
 class P2PChannel(
     val tempDir: String,
     val socket: DatagramSocket,
     val inetSocketAddress: InetSocketAddress,
 ) {
+    val scope = CoroutineScope(Dispatchers.IO)
+    private val internalReceiver = MutableSharedFlow<List<Any>>(1000)
+    val receiver = MutableSharedFlow<Message>(1000)
+    val map = ConcurrentHashMap<Int, Channel<Packet>>()
+
     init {
-        CoroutineScope(Dispatchers.IO).launch {
-            internalReceive()
+        scope.launch {
+            launch {
+                receive()
+            }
+            launch {
+                val savedMessages = ConcurrentHashMap<Int, MutableMap<Int, Message>>()
+                internalReceiver.collect {message ->
+                    val id = message[1] as Int
+                    val size = message[0] as Int
+                    val number = message[2] as Int
+                    val messageClass = message[3] as Message
+                    if(size == 1){
+                        receiver.emit(messageClass)
+                    }else{
+                        if (savedMessages[id]?.size == size - 1){
+                            savedMessages[id]!![number] = messageClass
+                            for (i in 0 until size){
+                                receiver.emit(savedMessages[id]!![i]!!)
+                            }
+                            savedMessages.remove(id)
+                        }else{
+                            savedMessages.getOrPut(id){mutableMapOf()}[number] = messageClass
+                        }
+                    }
+
+                }
+            }
         }
+
     }
 
     internal var status = ""
-    private val sendData = ConcurrentHashMap<Int, ConcurrentHashMap<Int, ByteArray>>()
-    private val maxBytesInPacket = 1020
-    private val messageReceiver = Channel<Messages>(Channel.UNLIMITED)
 
     suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
         val buffer = ByteArray(bytes.size + 8)
@@ -43,417 +87,151 @@ class P2PChannel(
         socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
     }
 
-    suspend fun send(rawData: ByteArray, code: Byte = 0.toByte()) = withContext(Dispatchers.IO) {
-        val dataSize = rawData.size
-
-        //Big packet (1020+ bytes)
-        if (dataSize + 20 > maxBytesInPacket) {
-            try {
-                val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
-                val random = Random.nextInt(65536)
-                for (i in 0 until packetCount) {
-                    val size = minOf(maxBytesInPacket - 20, (dataSize - (maxBytesInPacket - 20) * i)) + 20
-                    val buffer = ByteArray(size)
-                    buffer[0] = (i shr 24).toByte()
-                    buffer[1] = (i shr 16).toByte()
-                    buffer[2] = (i shr 8).toByte()
-                    buffer[3] = i.toByte()
-                    buffer[4] = (random shr 8).toByte()
-                    buffer[5] = random.toByte()
-                    buffer[6] = (packetCount shr 24).toByte()
-                    buffer[7] = (packetCount shr 16).toByte()
-                    buffer[8] = (packetCount shr 8).toByte()
-                    buffer[9] = packetCount.toByte()
-                    buffer[10] = (size shr 8).toByte()
-                    buffer[11] = size.toByte()
-                    buffer[18] = 0.toByte() // bytearray
-                    buffer[19] = code
-                    System.arraycopy(rawData, (maxBytesInPacket - 20) * i, buffer, 20, size - 20)
-                    sendData.getOrPut(random) { ConcurrentHashMap() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
-                    delay(1)
-                }
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            }
-        }
-        //System packet
-        else if (dataSize == 0) {
-            try {
-                val random = Random.nextInt(65536)
-                val buffer = ByteArray(20)
-                buffer[0] = (0 shr 24).toByte()
-                buffer[1] = (0 shr 16).toByte()
-                buffer[2] = (0 shr 8).toByte()
-                buffer[3] = 0.toByte()
-                buffer[4] = (random shr 8).toByte()
-                buffer[5] = random.toByte()
-                buffer[6] = (1 shr 24).toByte()
-                buffer[7] = (1 shr 16).toByte()
-                buffer[8] = (1 shr 8).toByte()
-                buffer[9] = 1.toByte()
-                buffer[10] = (20 shr 8).toByte()
-                buffer[11] = 20.toByte()
-                buffer[18] = 0.toByte() // bytearray
-                buffer[19] = code
-                System.arraycopy(rawData, 0, buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, 20, inetSocketAddress))
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            }
-        }
-        //Normal packet
-        else {
-            try {
-                val random = Random.nextInt(65536)
-                val buffer = ByteArray(dataSize + 20)
-                buffer[0] = (0 shr 24).toByte()
-                buffer[1] = (0 shr 16).toByte()
-                buffer[2] = (0 shr 8).toByte()
-                buffer[3] = 0.toByte()
-                buffer[4] = (random shr 8).toByte()
-                buffer[5] = random.toByte()
-                buffer[6] = (1 shr 24).toByte()
-                buffer[7] = (1 shr 16).toByte()
-                buffer[8] = (1 shr 8).toByte()
-                buffer[9] = 1.toByte()
-                buffer[10] = (buffer.size shr 8).toByte()
-                buffer[11] = (buffer.size).toByte()
-                buffer[18] = 0.toByte() // bytearray
-                buffer[19] = code
-                System.arraycopy(rawData, 0, buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            }
-        }
+    suspend fun sendPing() = withContext(Dispatchers.IO) {
+        socket.send(DatagramPacket(byteArrayOf(), 0, inetSocketAddress))
     }
 
-    suspend fun send(stream: InputStream, code: Byte) = withContext(Dispatchers.IO) {
+    private suspend fun sendData(any: Any, counter: Int, id: Int, arraySize: Int) = withContext(Dispatchers.IO) {
+        val random = Random.nextInt(65536)
+        val buffer = ByteArray(1020)
+        val stream = when (any) {
+            is ByteArray -> {
+                buffer[12] = 0
+                ByteArrayInputStream(any)
+            }
+
+            is String -> {
+                buffer[12] = 1
+                ByteArrayInputStream(any.encodeToByteArray())
+            }
+
+            is File -> {
+                buffer[12] = 2
+                any.inputStream()
+            }
+
+            else -> return@withContext
+        }
         val dataSize = stream.available()
-
-        //Big stream (1020+ bytes)
-        if (dataSize + 20 > maxBytesInPacket) {
-            try {
-                val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
-                val random = Random.nextInt(65536)
-                for (i in 0 until packetCount) {
-                    val size = minOf(maxBytesInPacket - 20, (dataSize - (maxBytesInPacket - 20) * i)) + 20
-                    val buffer = ByteArray(size)
-                    buffer[0] = (i shr 24).toByte()
-                    buffer[1] = (i shr 16).toByte()
-                    buffer[2] = (i shr 8).toByte()
-                    buffer[3] = i.toByte()
-                    buffer[4] = (random shr 8).toByte()
-                    buffer[5] = random.toByte()
-                    buffer[6] = (packetCount shr 24).toByte()
-                    buffer[7] = (packetCount shr 16).toByte()
-                    buffer[8] = (packetCount shr 8).toByte()
-                    buffer[9] = packetCount.toByte()
-                    buffer[10] = (size shr 8).toByte()
-                    buffer[11] = size.toByte()
-                    buffer[18] = 1.toByte() // file
-                    buffer[19] = code
-                    stream.readNBytes(buffer, 20, size - 20)
-                    sendData.getOrPut(random) { ConcurrentHashMap() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
-                    Logger.logger.log { println(i) }
-                    delay(1)
-                }
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            } finally {
-                stream.close()
-            }
-        }
-        //Noraml/zero stream
-        else {
-            try {
-                val random = Random.nextInt(65536)
-                val buffer = ByteArray(dataSize + 20)
-                buffer[0] = (0 shr 24).toByte()
-                buffer[1] = (0 shr 16).toByte()
-                buffer[2] = (0 shr 8).toByte()
-                buffer[3] = 0.toByte()
-                buffer[4] = (random shr 8).toByte()
-                buffer[5] = random.toByte()
-                buffer[6] = (1 shr 24).toByte()
-                buffer[7] = (1 shr 16).toByte()
-                buffer[8] = (1 shr 8).toByte()
-                buffer[9] = 1.toByte()
-                buffer[10] = (buffer.size shr 8).toByte()
-                buffer[11] = (buffer.size).toByte()
-                buffer[18] = 1.toByte() // file
-                buffer[19] = code
-                stream.readNBytes(buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            } finally {
-                stream.close()
-            }
+        val packetCount = ceil(dataSize.toFloat() / (1000f)).toInt()
+        for (i in 0 until packetCount) {
+            val size = minOf(1000, (dataSize - 1000 * i))
+            buffer[0] = (i shr 24).toByte()
+            buffer[1] = (i shr 16).toByte()
+            buffer[2] = (i shr 8).toByte()
+            buffer[3] = i.toByte()
+            buffer[4] = (random shr 8).toByte()
+            buffer[5] = random.toByte()
+            buffer[6] = (packetCount shr 24).toByte()
+            buffer[7] = (packetCount shr 16).toByte()
+            buffer[8] = (packetCount shr 8).toByte()
+            buffer[9] = packetCount.toByte()
+            buffer[10] = (size shr 8).toByte()
+            buffer[11] = size.toByte()
+            buffer[14] = counter.toByte()
+            buffer[13] = 0 //data
+            buffer[15] = (id shr 8).toByte()
+            buffer[16] = id.toByte()
+            buffer[17] = arraySize.toByte()
+            stream.readNBytes(buffer, 20, size)
+            socket.send(DatagramPacket(buffer.copyOfRange(0, size + 20), size + 20, inetSocketAddress))
         }
     }
 
-    suspend fun send(file: File, code: Byte) = withContext(Dispatchers.IO) {
-        val dataSize = file.length().toInt()
-        val stream = file.inputStream()
-
-        //Big file (1020+ bytes)
-        if (dataSize + 20 > maxBytesInPacket) {
-            try {
-                val packetCount = ceil(dataSize.toFloat() / (maxBytesInPacket.toFloat() - 20f)).toInt()
-                Logger.logger.log { println(packetCount) }
-                val random = Random.nextInt(65536)
-                for (i in 0 until packetCount) {
-                    val size = minOf(maxBytesInPacket - 20, (dataSize - (maxBytesInPacket - 20) * i)) + 20
-                    val buffer = ByteArray(size)
-                    buffer[0] = (i shr 24).toByte()
-                    buffer[1] = (i shr 16).toByte()
-                    buffer[2] = (i shr 8).toByte()
-                    buffer[3] = i.toByte()
-                    buffer[4] = (random shr 8).toByte()
-                    buffer[5] = random.toByte()
-                    buffer[6] = (packetCount shr 24).toByte()
-                    buffer[7] = (packetCount shr 16).toByte()
-                    buffer[8] = (packetCount shr 8).toByte()
-                    buffer[9] = packetCount.toByte()
-                    buffer[10] = (size shr 8).toByte()
-                    buffer[11] = size.toByte()
-                    buffer[18] = 1.toByte() // file
-                    buffer[19] = code
-                    stream.readNBytes(buffer, 20, size - 20)
-                    sendData.getOrPut(random) { ConcurrentHashMap() }[i] = buffer
-                    socket.send(DatagramPacket(buffer, size, inetSocketAddress))
-                    Logger.logger.log { println(i) }
-                    delay(1)
-                }
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            } finally {
-                stream.close()
+    //добирать ли потерянные пакеты, интерфейс для переделывания кастомных классов в байт сарай
+    suspend fun send(vararg data: Any): Int = withContext(Dispatchers.IO) {
+        val random = Random.nextInt(65536)
+        for ((counter, one) in data.withIndex()) {
+            launch {
+                sendData(one, counter, random, data.size)
             }
+            delay(5)
         }
-        //Normal/zero file
-        else {
-            try {
-                val random = Random.nextInt(65536)
-                val buffer = ByteArray(dataSize + 20)
-                buffer[0] = (0 shr 24).toByte()
-                buffer[1] = (0 shr 16).toByte()
-                buffer[2] = (0 shr 8).toByte()
-                buffer[3] = 0.toByte()
-                buffer[4] = (random shr 8).toByte()
-                buffer[5] = random.toByte()
-                buffer[6] = (1 shr 24).toByte()
-                buffer[7] = (1 shr 16).toByte()
-                buffer[8] = (1 shr 8).toByte()
-                buffer[9] = 1.toByte()
-                buffer[10] = (buffer.size shr 8).toByte()
-                buffer[11] = (buffer.size).toByte()
-                buffer[18] = 1.toByte() // file
-                buffer[19] = code
-                stream.readNBytes(buffer, 20, dataSize)
-                socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-            } finally {
-                stream.close()
-            }
-        }
+        return@withContext 0
     }
 
-    suspend fun receive(): Messages {
+    fun decodeHeader(buffer: ByteArray): Packet {
+        val number = ((buffer[0].toInt() and 0xFF) shl 24) or
+                ((buffer[1].toInt() and 0xFF) shl 16) or
+                ((buffer[2].toInt() and 0xFF) shl 8) or
+                (buffer[3].toInt() and 0xFF)
+        val id = ((buffer[15].toInt() and 0xff) shl 8) or (buffer[16].toInt() and 0xff)
+        val random = ((buffer[4].toInt() and 0xff) shl 8) or (buffer[5].toInt() and 0xff)
+        val count = ((buffer[6].toInt() and 0xFF) shl 24) or
+                ((buffer[7].toInt() and 0xFF) shl 16) or
+                ((buffer[8].toInt() and 0xFF) shl 8) or
+                (buffer[9].toInt() and 0xFF)
+        val data = buffer.copyOfRange(20, buffer.size)
+        val className = when (buffer[12].toInt() and 0xFF) {
+            0 -> "ByteArray"
+            1 -> "String"
+            2 -> "File"
+            else -> "Unknown"
+        }
+        val type = buffer[13].toInt() and 0xFF
+        val counter = buffer[14].toInt() and 0xFF
+        val dataCount = buffer[17].toInt() and 0xFF
+        return Packet(id, random,dataCount,type, className, number, counter, count, data)
+
+    }
+
+    private suspend fun merger(random: Int, count: Int, className: String) = withContext(Dispatchers.IO) {
+        val channel = map[random]!!
+        val file = File(tempDir, Random.nextLong().toString()).apply {
+            createNewFile()
+        }
+        var dataCount = 0
+        var id = 0
+        var dataCounter = 0
+        val bitset = BitSet(count)
+        val raf = RandomAccessFile(file, "rw")
+        while (bitset.cardinality() < count) {
+            val packet = channel.receive()
+            dataCount = packet.dataCount
+            id = packet.id
+            dataCounter = packet.dataCounter
+            val data = packet.data
+            raf.seek(packet.number * 1000L)
+            raf.write(data)
+            bitset.set(packet.number)
+        }
+        raf.close()
+        when (className) {
+            "ByteArray" -> {
+                val bytes = file.readBytes()
+                internalReceiver.emit(listOf(dataCount, id, dataCounter, Bytes(bytes)))
+                file.delete()
+            }
+
+            "String" -> {
+                val bytes = file.readBytes()
+                internalReceiver.emit(listOf(dataCount, id, dataCounter, Text(bytes.decodeToString())))
+                file.delete()
+            }
+
+            "File" -> {
+                internalReceiver.emit(listOf(dataCount, id, dataCounter, File(file)))
+            }
+        }
+        map.remove(random)
+    }
+
+    private suspend fun receive() = withContext(Dispatchers.IO) {
         while (true) {
-            val message = messageReceiver.receive()
-            try {
-                Logger.logger.log { println("Received message") }
-                return message
-            } catch (e: Exception) {
-                Logger.logger.log { e.printStackTrace() }
-                continue
-            }
-        }
-    }
-
-    internal fun internalReceive() {
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            val mapOfBytes = ConcurrentHashMap<Int, Channel<ByteArray>>()
-            val flowOfIds = MutableSharedFlow<Int>(10)
+            val buffer = ByteArray(1020)
+            val datagramPacket = DatagramPacket(buffer, buffer.size)
+            socket.receive(datagramPacket)
+            status = "first"
+            if (datagramPacket.length == 0) continue
             launch {
-                while (true) {
-                    try {
-                        val buffer = ByteArray(maxBytesInPacket)
-                        val packet = DatagramPacket(buffer, buffer.size)
-                        socket.receive(packet)
-                        status = "new_packet"
-                        if (packet.length == 20) {
-                            continue
-                        }
-                        if (buffer.copyOfRange(0, 7).all { it == 0.toByte() }) {
-                            forkInfo[forkId] = buffer.copyOfRange(8, packet.length).decodeToString()
-                            continue
-                        }
-                        if (packet.length == 6) {
-                            val currentId = ((buffer[0].toInt() and 0xFF) shl 8) or (buffer[1].toInt() and 0xFF)
-                            val currentNum = ((buffer[2].toInt() and 0xFF) shl 24) or
-                                    ((buffer[3].toInt() and 0xFF) shl 16) or
-                                    ((buffer[4].toInt() and 0xFF) shl 8) or
-                                    (buffer[5].toInt() and 0xFF)
-                            val data = sendData[currentId]!![currentNum]
-                            socket.send(
-                                DatagramPacket(data, data!!.size, inetSocketAddress)
-                            )
-                        } else if (buffer[0] == 0xFF.toByte() && packet.length == 3) {
-                            val id = ((buffer[1].toInt() and 0xff) shl 8) or (buffer[2].toInt() and 0xFF)
-                            sendData.remove(id)
-                        } else {
-                            val size =
-                                ((buffer[10].toInt() and 0xFF) shl 8) or (buffer[11].toInt() and 0xFF)
-                            val id = ((buffer[4].toInt() and 0xff) shl 8) or (buffer[5].toInt() and 0xff)
-                            if(mapOfBytes[id]==null){
-                                val newChannel = Channel<ByteArray>(Channel.UNLIMITED)
-                                mapOfBytes[id] = newChannel
-                                mapOfBytes[id]!!.send(buffer.copyOfRange(0, size))
-                                flowOfIds.emit(id)
-                            }else{
-                                mapOfBytes[id]!!.send(buffer.copyOfRange(0, size))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Logger.logger.log { e.printStackTrace() }
-                    }
-                }
-            }
-
-            launch {
-                try {
-                    flowOfIds.collect {  id ->
-                        launch {
-                            try {
-                                val channel = mapOfBytes[id]!!
-                                var buffer = ByteArray(0)
-                                buffer = channel.receive()
-                                val totalCount = ((buffer[6].toInt() and 0xFF) shl 24) or
-                                        ((buffer[7].toInt() and 0xFF) shl 16) or
-                                        ((buffer[8].toInt() and 0xFF) shl 8) or
-                                        (buffer[9].toInt() and 0xFF)
-                                val isArray = if (buffer[18] == 0.toByte()) true else false
-                                val code = buffer[19]
-                                if (totalCount == 1) {
-                                    if (isArray) {
-                                        messageReceiver.send(
-                                            Messages.ByteMessage(buffer.copyOfRange(20, buffer.size), code)
-                                        )
-                                        mapOfBytes.remove(id)
-                                        return@launch
-                                    } else {
-                                        val file =
-                                            File(
-                                                tempDir,
-                                                Random.nextLong().toString()
-                                            )
-                                        try {
-                                            file.apply {
-                                                createNewFile()
-                                                writeBytes(buffer.copyOfRange(20, buffer.size))
-                                            }
-                                        } catch (_: FileAlreadyExistsException) {
-                                            file.delete()
-                                            file.apply {
-                                                createNewFile()
-                                                writeBytes(buffer.copyOfRange(20, buffer.size))
-                                            }
-                                        }
-                                        messageReceiver.send(
-                                            Messages.FileMessage(file, code)
-                                        )
-                                        mapOfBytes.remove(id)
-                                    }
-                                } else {
-                                    val receivedData = Array(totalCount) { false }
-                                    val raf = File(tempDir, Random.nextLong().toString())
-                                    try {
-                                        raf.createNewFile()
-                                    } catch (_: FileAlreadyExistsException) {
-                                        raf.delete()
-                                        raf.createNewFile()
-                                    }
-                                    val massiveBuffer = RandomAccessFile(raf, "rw")
-
-                                    val size =
-                                        ((buffer[10].toInt() and 0xFF) shl 8) or (buffer[11].toInt() and 0xFF)
-                                    val num = ((buffer[0].toInt() and 0xFF) shl 24) or
-                                            ((buffer[1].toInt() and 0xFF) shl 16) or
-                                            ((buffer[2].toInt() and 0xFF) shl 8) or
-                                            (buffer[3].toInt() and 0xFF)
-                                    massiveBuffer.seek(((maxBytesInPacket - 20) * num).toLong())
-                                    massiveBuffer.write(buffer, 20, size - 20)
-                                    receivedData[num] = true
-                                    var totalSize = size - 20
-                                    var count = 1
-                                    var attempts = 1
-                                    while (count < totalCount) {
-                                        try {
-                                            withTimeout(1.seconds) {
-                                                buffer = channel.receive()
-                                                val size =
-                                                    ((buffer[10].toInt() and 0xFF) shl 8) or (buffer[11].toInt() and 0xFF)
-                                                val num = ((buffer[0].toInt() and 0xFF) shl 24) or
-                                                        ((buffer[1].toInt() and 0xFF) shl 16) or
-                                                        ((buffer[2].toInt() and 0xFF) shl 8) or
-                                                        (buffer[3].toInt() and 0xFF)
-                                                if (receivedData[num] != true) {
-                                                    receivedData[num] = true
-                                                    massiveBuffer.seek(((maxBytesInPacket - 20) * num).toLong())
-                                                    massiveBuffer.write(buffer, 20, size - 20)
-                                                    count++
-                                                    totalSize += (size - 20)
-                                                }
-                                            }
-                                        } catch (_: TimeoutCancellationException) {
-                                            attempts++
-                                            if (attempts > 3) {
-                                                break
-                                            }
-                                            receivedData.indices.filter { receivedData[it] == false }.forEach {
-                                                println(it)
-                                                socket.send(
-                                                    DatagramPacket(
-                                                        byteArrayOf(
-                                                            (id shr 8).toByte(),
-                                                            id.toByte(),
-                                                            (it shr 24).toByte(),
-                                                            (it shr 16).toByte(),
-                                                            (it shr 8).toByte(),
-                                                            it.toByte()
-                                                        ), 6, inetSocketAddress
-                                                    )
-                                                )
-                                            }
-                                            continue
-                                        }
-                                    }
-                                    if (attempts <= 3) {
-                                        if (isArray) {
-                                            messageReceiver.send(Messages.ByteMessage(raf.readBytes(), code))
-                                        } else {
-                                            messageReceiver.send(Messages.FileMessage(raf, code))
-                                        }
-                                        val cleanup = byteArrayOf(0xFF.toByte(), (id shr 8).toByte(), id.toByte())
-                                        socket.send(DatagramPacket(cleanup, cleanup.size, inetSocketAddress))
-                                    }
-                                    mapOfBytes.remove(id)
-                                    massiveBuffer.close()
-                                }
-                            } catch (e: Exception) {
-                                Logger.logger.log { e.printStackTrace() }
-
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Logger.logger.log { e.printStackTrace() }
+                val packet = decodeHeader(buffer.copyOfRange(0, datagramPacket.length))
+                if (packet.packetCount == 1) {
+                    internalReceiver.emit(listOf(packet.dataCount, packet.id, packet.dataCounter, Bytes(packet.data)))
+                } else if (map[packet.random] == null) {
+                    map.getOrPut(packet.random) { Channel(Channel.UNLIMITED) }.send(packet)
+                    merger(packet.random, packet.packetCount, packet.className)
+                } else if (map[packet.random] != null) {
+                    map[packet.random]!!.send(packet)
                 }
             }
         }
@@ -461,5 +239,6 @@ class P2PChannel(
 
     fun closeChannel() {
         socket.close()
+        scope.cancel()
     }
 }
