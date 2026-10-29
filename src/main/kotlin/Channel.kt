@@ -18,7 +18,6 @@ import java.util.BitSet
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.Any
 import kotlin.collections.List
-import kotlin.collections.mutableMapOf
 import kotlin.math.ceil
 import kotlin.random.Random
 import kotlin.time.Duration.Companion.seconds
@@ -46,8 +45,6 @@ class P2PChannel(
     private val inetSocketAddress: InetSocketAddress,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
-    private val internalReceiver = MutableSharedFlow<List<Any>>(1000)
-    val receiver = MutableSharedFlow<Message>(1000)
     private val map = ConcurrentHashMap<Int, Channel<Packet>>()
     private val sendData = ConcurrentHashMap<Int, Message>()
 
@@ -56,32 +53,34 @@ class P2PChannel(
             launch {
                 receive()
             }
-            launch {
-                val savedMessages = ConcurrentHashMap<Int, MutableMap<Int, Message>>()
-                internalReceiver.collect { message ->
-                    val id = message[1] as Int
-                    val size = message[0] as Int
-                    val number = message[2] as Int
-                    val messageClass = message[3] as Message
-                    if (size == 1) {
-                        receiver.emit(messageClass)
-                    } else {
-                        if (savedMessages[id]?.size == size - 1) {
-                            savedMessages[id]!![number] = messageClass
-                            for (i in 0 until size) {
-                                receiver.emit(savedMessages[id]!![i]!!)
-                            }
-                            savedMessages.remove(id)
-                        } else {
-                            savedMessages.getOrPut(id) { mutableMapOf() }[number] = messageClass
-                        }
-                    }
+        }
+    }
 
+    val receiver = MutableSharedFlow<Array<Message>>(1000)
+    private val savedMessages = ConcurrentHashMap<Int, MutableMap<Int, Message>>()
+    private suspend fun currentQueue(id: Int, size: Int, num: Int, message: Message) = withContext(Dispatchers.IO) {
+        if (size == 1) {
+            receiver.emit(arrayOf(message))
+            return@withContext
+        }
+        if (savedMessages[id] == null) {
+            savedMessages.getOrPut(id) { mutableMapOf() }!![num] = message
+        } else {
+            if (savedMessages[id]!!.size < size - 1) {
+                savedMessages.getOrPut(id) { mutableMapOf() }!![num] = message
+            } else {
+                savedMessages.getOrPut(id) { mutableMapOf() }!![num] = message
+                val list = buildList {
+                    for (i in 0 until size) {
+                        add(savedMessages[id]!![i]!!)
+                    }
                 }
+                savedMessages.remove(id)
+                receiver.emit(list.toTypedArray())
             }
         }
-
     }
+
 
     internal var status = ""
 
@@ -185,9 +184,6 @@ class P2PChannel(
         random: Int,
         numbers: Array<Int>,
         packetCount: Int,
-        dataCount: Int,
-        id: Int,
-        counter: Int
     ) = withContext(
         Dispatchers.IO
     ) {
@@ -205,11 +201,7 @@ class P2PChannel(
         buffer[9] = packetCount.toByte()
         buffer[10] = (size shr 8).toByte()
         buffer[11] = size.toByte()
-        buffer[14] = counter.toByte()
         buffer[13] = 1 //find lost
-        buffer[15] = (id shr 8).toByte()
-        buffer[16] = id.toByte()
-        buffer[17] = dataCount.toByte()
         for ((i, num) in numbers.withIndex()) {
             buffer[20 + i * 4] = (num shr 24).toByte()
             buffer[21 + i * 4] = (num shr 16).toByte()
@@ -237,55 +229,50 @@ class P2PChannel(
         socket.send(DatagramPacket(buffer, 20, inetSocketAddress))
     }
 
-    private suspend fun merger(random: Int, count: Int, className: String) = withContext(Dispatchers.IO) {
-        val channel = map[random]!!
-        val file = File(tempDir, Random.nextLong().toString()).apply {
-            createNewFile()
-        }
-        var dataCount = 0
-        var id = 0
-        var dataCounter = 0
-        val bitset = BitSet(count)
-        val raf = RandomAccessFile(file, "rw")
-        while (bitset.cardinality() < count) {
-            try {
-                val packet = withTimeout(2.seconds) {
-                    channel.receive()
+    private suspend fun merger(id: Int, counter: Int, dataSize: Int, random: Int, count: Int, className: String) =
+        withContext(Dispatchers.IO) {
+            val channel = map[random]!!
+            val file = File(tempDir, Random.nextLong().toString()).apply {
+                createNewFile()
+            }
+            val bitset = BitSet(count)
+            val raf = RandomAccessFile(file, "rw")
+            while (bitset.cardinality() < count) {
+                try {
+                    val packet = withTimeout(2.seconds) {
+                        channel.receive()
+                    }
+                    val data = packet.data
+                    raf.seek(packet.number * 1000L)
+                    raf.write(data)
+                    bitset.set(packet.number)
+                } catch (_: TimeoutCancellationException) {
+                    val emptyBits = getEmptyBits(bitset, count)
+                    findLostPackets(random, emptyBits, count)
+                    continue
                 }
-                dataCount = packet.dataCount
-                id = packet.id
-                dataCounter = packet.dataCounter
-                val data = packet.data
-                raf.seek(packet.number * 1000L)
-                raf.write(data)
-                bitset.set(packet.number)
-            } catch (_: TimeoutCancellationException) {
-                val emptyBits = getEmptyBits(bitset, count)
-                findLostPackets(random, emptyBits, count, dataCount, id, dataCounter)
-                continue
             }
-        }
-        raf.close()
-        removeData(random)
-        when (className) {
-            "ByteArray" -> {
-                val bytes = file.readBytes()
-                internalReceiver.emit(listOf(dataCount, id, dataCounter, Bytes(bytes)))
-                file.delete()
-            }
+            raf.close()
+            removeData(random)
+            when (className) {
+                "ByteArray" -> {
+                    val bytes = file.readBytes()
+                    currentQueue(id, dataSize, counter, Bytes(bytes))
+                    file.delete()
+                }
 
-            "String" -> {
-                val bytes = file.readBytes()
-                internalReceiver.emit(listOf(dataCount, id, dataCounter, Text(bytes.decodeToString())))
-                file.delete()
-            }
+                "String" -> {
+                    val bytes = file.readBytes()
+                    currentQueue(id, dataSize, counter, Text(bytes.decodeToString()))
+                    file.delete()
+                }
 
-            "File" -> {
-                internalReceiver.emit(listOf(dataCount, id, dataCounter, Files(file)))
+                "File" -> {
+                    currentQueue(id, dataSize, counter, Files(file))
+                }
             }
+            map.remove(random)
         }
-        map.remove(random)
-    }
 
     private suspend fun sendLostPackets(packet: Packet) = withContext(Dispatchers.IO) {
         val data = packet.data
@@ -387,20 +374,22 @@ class P2PChannel(
 
                             else -> cancel()
                         }
-                        internalReceiver.emit(
-                            listOf(
-                                packet.dataCount,
-                                packet.id,
-                                packet.dataCounter,
-                                message
-                            )
-                        )
+                        currentQueue(packet.id, packet.dataCount, packet.dataCounter, message as Message)
                         removeData(packet.random)
                         cancel()
                     }
                 } else if (map[packet.random] == null) {
                     map.getOrPut(packet.random) { Channel(Channel.UNLIMITED) }.send(packet)
-                    merger(packet.random, packet.packetCount, packet.className)
+                    launch {
+                        merger(
+                            packet.id,
+                            packet.dataCounter,
+                            packet.dataCount,
+                            packet.random,
+                            packet.packetCount,
+                            packet.className
+                        )
+                    }
                     delay(50)
                 } else if (map[packet.random] != null) {
                     map[packet.random]!!.send(packet)
