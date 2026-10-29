@@ -85,7 +85,7 @@ class P2PChannel(
 
     internal var status = ""
 
-    private suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
+    internal suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
         val buffer = ByteArray(bytes.size + 8)
         System.arraycopy(bytes, 0, buffer, 8, bytes.size)
         socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
