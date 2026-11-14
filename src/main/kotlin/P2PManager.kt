@@ -15,15 +15,17 @@ data class ICECandidates(
     val localIpv4: InetSocketAddress?,
     val ipv6: InetSocketAddress?,
     val localIpv6: InetSocketAddress?,
+    val publicKey: String
 )
 
-class TracedDatagramSocket(address: InetSocketAddress?): DatagramSocket(address) {
+class TracedDatagramSocket(address: InetSocketAddress?) : DatagramSocket(address) {
     override fun close() {
         val exception = Exception("Closed")
-        Logger.logger.log { exception.printStackTrace()}
+        Logger.logger.log { exception.printStackTrace() }
         super.close()
     }
 }
+
 interface Log {
     fun log(lambda: () -> Unit)
 }
@@ -33,9 +35,14 @@ object Logger {
 }
 
 class P2PManager(val tempDir: String) {
+    internal val forkInfo = mutableMapOf<Int, String>()
+
+    @Volatile
+    internal var forkId = 0
+
+    internal val crypto = LocalCrypto()
+
     companion object {
-        val forkInfo = mutableMapOf<Int, String>()
-        @Volatile var forkId = 0
         fun getICEFromString(iceCandidates: String): ICECandidates {
             val split = iceCandidates.split("&")
             return ICECandidates(
@@ -59,25 +66,25 @@ class P2PManager(val tempDir: String) {
                 } else {
                     InetSocketAddress(InetAddress.getByName(split[6]), split[7].toInt())
                 },
-
-                )
+                publicKey = split[8]
+            )
         }
     }
 
-    fun fork(): P2PManager? = runBlocking(Dispatchers.IO){
+    fun fork(): P2PManager? = runBlocking(Dispatchers.IO) {
         return@runBlocking try {
             val manager = P2PManager(tempDir)
             channel.sendFork(manager.getICECandidates().encodeToByteArray())
             while (forkInfo[forkId] == null) {
-                delay(100)
+                delay(300)
             }
             val info = forkInfo[forkId]!!
             forkId++
             manager.createConnection(getICEFromString(info))
-            Logger.logger.log{println("fork successfully created")}
+            Logger.logger.log { println("fork successfully created") }
             manager
         } catch (e: Exception) {
-            Logger.logger.log{println(e.message ?: "fork failed")}
+            Logger.logger.log { println(e.message ?: "fork failed") }
             null
         }
     }
@@ -116,7 +123,8 @@ class P2PManager(val tempDir: String) {
             append(myIpv6Address?.hostString ?: "null", "&")
             append(myIpv6Address?.port ?: "null", "&")
             append(myIpv6LocalAddress?.hostString ?: "null", "&")
-            append(myIpv6LocalAddress?.port ?: "null")
+            append(myIpv6LocalAddress?.port ?: "null", "&")
+            append(crypto.publicBytes.toHexString())
         }
     }
 
@@ -124,26 +132,49 @@ class P2PManager(val tempDir: String) {
         socketIpv4?.soTimeout = 0
         socketIpv6?.soTimeout = 0
         CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            val peer = PeerCrypto(iceCandidates.publicKey.hexToByteArray())
             try {
                 when {
                     iceCandidates.ipv6 != null && myIpv6Address != null -> {
                         if (iceCandidates.ipv6.hostString != myIpv6Address!!.hostString) {
-                            channel = P2PChannel(tempDir, socketIpv6!!, iceCandidates.ipv6)
+                            channel =
+                                P2PChannel(tempDir, socketIpv6!!, iceCandidates.ipv6, this@P2PManager, crypto, peer)
                         } else {
-                            channel = P2PChannel(tempDir, socketIpv6!!, iceCandidates.localIpv6!!)
+                            channel = P2PChannel(
+                                tempDir,
+                                socketIpv6!!,
+                                iceCandidates.localIpv6!!,
+                                this@P2PManager,
+                                crypto,
+                                peer
+                            )
                         }
                     }
 
                     iceCandidates.ipv4 != null && myIpv4Address != null -> {
                         if (iceCandidates.ipv4.hostString != myIpv4Address!!.hostString) {
-                            channel = P2PChannel(tempDir, socketIpv4!!, iceCandidates.ipv4)
+                            channel = P2PChannel(
+                                tempDir,
+                                socketIpv4!!,
+                                iceCandidates.ipv4,
+                                this@P2PManager,
+                                crypto,
+                                peer
+                            )
                         } else {
-                            channel = P2PChannel(tempDir, socketIpv4!!, iceCandidates.localIpv4!!)
+                            channel = P2PChannel(
+                                tempDir,
+                                socketIpv4!!,
+                                iceCandidates.localIpv4!!,
+                                this@P2PManager,
+                                crypto,
+                                peer
+                            )
                         }
                     }
                 }
             } catch (e: Exception) {
-                Logger.logger.log{println(e.message ?: "Connection failed")}
+                Logger.logger.log { println(e.message ?: "Connection failed") }
             }
             launch {
                 while (true) {
@@ -159,7 +190,7 @@ class P2PManager(val tempDir: String) {
                         }
                         delay(1000)
                     } catch (e: Exception) {
-                        Logger.logger.log{println(e.message ?: "Connection failed")}
+                        Logger.logger.log { println(e.message ?: "Connection failed") }
                     }
                 }
             }
@@ -168,7 +199,7 @@ class P2PManager(val tempDir: String) {
                     status = channel.status
                     delay(500)
                 }
-                Logger.logger.log{println(status)}
+                Logger.logger.log { println(status) }
             }
         }
 

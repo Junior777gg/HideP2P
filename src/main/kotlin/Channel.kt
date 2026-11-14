@@ -14,6 +14,7 @@ import java.io.RandomAccessFile
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.security.GeneralSecurityException
 import java.util.BitSet
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.Any
@@ -43,7 +44,11 @@ class P2PChannel(
     val tempDir: String,
     private val socket: DatagramSocket,
     private val inetSocketAddress: InetSocketAddress,
-) {
+    val manager: P2PManager,
+    val crypto: LocalCrypto,
+    val peer: PeerCrypto,
+
+    ) {
     private val scope = CoroutineScope(Dispatchers.IO)
     private val map = ConcurrentHashMap<Int, Channel<Packet>>()
     private val sendData = ConcurrentHashMap<Int, Message>()
@@ -84,10 +89,16 @@ class P2PChannel(
 
     internal var status = ""
 
+    private fun rawSend(plain: ByteArray) {
+        val enc = peer.encrypt(plain)
+        socket.send(DatagramPacket(enc, enc.size, inetSocketAddress))
+    }
+
     internal suspend fun sendFork(bytes: ByteArray) = withContext(Dispatchers.IO) {
-        val buffer = ByteArray(bytes.size + 8)
-        System.arraycopy(bytes, 0, buffer, 8, bytes.size)
-        socket.send(DatagramPacket(buffer, buffer.size, inetSocketAddress))
+        val buffer = ByteArray(bytes.size + 20)
+        buffer[13] = 3 //fork
+        System.arraycopy(bytes, 0, buffer, 20, bytes.size)
+        rawSend(buffer)
     }
 
     suspend fun sendPing() = withContext(Dispatchers.IO) {
@@ -140,12 +151,13 @@ class P2PChannel(
             buffer[16] = id.toByte()
             buffer[17] = arraySize.toByte()
             stream.readNBytes(buffer, 20, size)
-            socket.send(DatagramPacket(buffer.copyOfRange(0, size + 20), size + 20, inetSocketAddress))
+            rawSend(buffer.copyOfRange(0, size + 20))
         }
     }
 
-    //добирать ли потерянные пакеты, интерфейс для переделывания кастомных классов в байт сарай
+    //добирать ли потерянные пакеты,
     suspend fun send(vararg data: Any): Int = withContext(Dispatchers.IO) {
+        Logger.logger.log {println(sendData.size)}
         val random = Random.nextInt(65536)
         for ((counter, one) in data.withIndex()) {
             launch {
@@ -208,7 +220,7 @@ class P2PChannel(
             buffer[22 + i * 4] = (num shr 8).toByte()
             buffer[23 + i * 4] = num.toByte()
         }
-        socket.send(DatagramPacket(buffer.copyOfRange(0, size * 4 + 20), size * 4 + 20, inetSocketAddress))
+        rawSend(buffer.copyOfRange(0, size * 4 + 20))
     }
 
     private fun getEmptyBits(bitSet: BitSet, limit: Int): Array<Int> {
@@ -226,7 +238,7 @@ class P2PChannel(
         buffer[4] = (random shr 8).toByte()
         buffer[5] = random.toByte()
         buffer[13] = 2 //remove data
-        socket.send(DatagramPacket(buffer, 20, inetSocketAddress))
+        rawSend(buffer)
     }
 
     private suspend fun merger(id: Int, counter: Int, dataSize: Int, random: Int, count: Int, className: String) =
@@ -242,6 +254,7 @@ class P2PChannel(
                     val packet = withTimeout(2.seconds) {
                         channel.receive()
                     }
+                    Logger.logger.log { println(packet.number) }
                     val data = packet.data
                     raf.seek(packet.number * 1000L)
                     raf.write(data)
@@ -275,6 +288,7 @@ class P2PChannel(
         }
 
     private suspend fun sendLostPackets(packet: Packet) = withContext(Dispatchers.IO) {
+        Logger.logger.log { println("lost packets") }
         val data = packet.data
         val nums: List<Int> = buildList {
             for (i in 0 until packet.number) {
@@ -332,25 +346,35 @@ class P2PChannel(
             buffer[16] = packet.id.toByte()
             buffer[17] = packet.dataCount.toByte()
             stream.readNBytes(buffer, 20, size)
-            socket.send(DatagramPacket(buffer.copyOfRange(0, size + 20), size + 20, inetSocketAddress))
+            rawSend(buffer.copyOfRange(0, size + 20))
         }
     }
 
     private suspend fun receive() = withContext(Dispatchers.IO) {
         while (true) {
             try {
-                val buffer = ByteArray(1020)
+                val buffer = ByteArray(1200)
                 val datagramPacket = DatagramPacket(buffer, buffer.size)
                 socket.receive(datagramPacket)
                 status = "first"
-                if (datagramPacket.length < 20) continue
-                val packet = decodeHeader(buffer.copyOfRange(0, datagramPacket.length))
+                if (datagramPacket.length == 0) continue
+                val plain = try {
+                    crypto.decrypt(buffer.copyOfRange(0, datagramPacket.length))
+                } catch (_: Exception) {
+                    continue
+                }
+                if (plain.size < 20) continue
+                val packet = decodeHeader(plain)
                 if (packet.packetType == 1) {
                     sendLostPackets(packet)
                     continue
                 }
                 if (packet.packetType == 2) {
                     sendData.remove(packet.random)
+                    continue
+                }
+                if (packet.packetType == 3) {
+                    manager.forkInfo[manager.forkId] = packet.data.decodeToString()
                     continue
                 }
                 if (packet.packetCount == 1) {

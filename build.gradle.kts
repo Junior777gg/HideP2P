@@ -11,7 +11,7 @@ repositories {
 
 dependencies {
     compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
-    compileOnly("com.google.crypto.tink:tink:1.21.0")
+    compileOnly("com.google.crypto.tink:tink:1.17.0")
     testImplementation(kotlin("test"))
 }
 
